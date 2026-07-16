@@ -119,8 +119,15 @@ function topEmployeeOfDept(employees, dept) {
 function isEndorsedThisMonth(endorsements, employeeId) {
   return endorsements.some(en => en.employeeId === employeeId && en.month === currentMonthKey());
 }
-function generatePin() {
-  return String(Math.floor(1000 + Math.random() * 9000));
+const PASSWORD_GUIDELINE = "At least 8 characters, with at least one uppercase letter, one lowercase letter, one number, and one special character.";
+function isValidPassword(pw) {
+  return pw.length >= 8 && /[a-z]/.test(pw) && /[A-Z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw);
+}
+function generateTempPassword() {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ", lower = "abcdefghijkmnpqrstuvwxyz", digits = "23456789", special = "!@#$%&*";
+  const pick = (s) => s[Math.floor(Math.random() * s.length)];
+  let pw = pick(upper) + pick(lower) + pick(digits) + pick(special) + pick(upper) + pick(lower) + pick(digits);
+  return pw.split("").sort(() => Math.random() - 0.5).join("");
 }
 
 /* ---------------------------------- SUPABASE CONNECTION (plain fetch — no SDK needed) ---------------------------------- */
@@ -185,7 +192,7 @@ function toDbEmployee(appEmp, deptNameToId) {
     department_id: deptNameToId[appEmp.dept] || null,
     manager_id: appEmp.managerId || null,
     role: appEmp.role, points: appEmp.points || 0, streak: appEmp.streak || 0,
-    status: appEmp.status || "active", pin: appEmp.pin,
+    status: appEmp.status || "active", password: appEmp.password,
   };
 }
 function fromDbEmployee(row, deptIdToName) {
@@ -193,7 +200,7 @@ function fromDbEmployee(row, deptIdToName) {
     id: row.id, name: `${row.first_name} ${row.last_name}`.trim(),
     dept: deptIdToName[row.department_id] || LIVE_DEPARTMENTS[0].name,
     managerId: row.manager_id, role: row.role, points: row.points, streak: row.streak,
-    status: row.status, pin: row.pin,
+    status: row.status, password: row.password,
   };
 }
 function fromDbPending(row, deptIdToName) {
@@ -201,7 +208,7 @@ function fromDbPending(row, deptIdToName) {
     id: row.id, name: `${row.first_name} ${row.last_name}`.trim(),
     dept: deptIdToName[row.department_id] || LIVE_DEPARTMENTS[0].name,
     managerId: row.requested_manager_id, requestedAt: row.requested_at?.slice(0, 10) || "recently",
-    pin: row.pin,
+    password: row.password, requestedRole: row.requested_role || "trainee",
   };
 }
 
@@ -650,14 +657,14 @@ function AdminView({ state, actions }) {
 
           {state.credentialsToShare.length > 0 && (
             <div className="tp-card p-4 mb-6" style={{ borderColor: "var(--gold)" }}>
-              <div className="font-semibold mb-1 flex items-center gap-2"><Shield size={16} className="tp-gold-text" /> New login PINs for bulk-imported employees</div>
-              <p className="text-xs tp-slate-text mb-3">These were imported directly, not self-registered, so a PIN was generated for them. Share it once, then dismiss. (Employees who sign themselves up choose their own PIN — nothing to share for those.)</p>
+              <div className="font-semibold mb-1 flex items-center gap-2"><Shield size={16} className="tp-gold-text" /> New login passwords for bulk-imported employees</div>
+              <p className="text-xs tp-slate-text mb-3">These were imported directly, not self-registered, so a temporary password was generated for them. Share it once, then dismiss. (Employees who sign themselves up choose their own password — nothing to share for those.)</p>
               <div className="grid gap-2">
                 {state.credentialsToShare.map(c => (
                   <div key={c.id} className="flex items-center justify-between p-2 rounded-lg tp-ice-bg">
                     <span className="text-sm font-medium">{c.name}</span>
                     <div className="flex items-center gap-3">
-                      <span className="tp-display font-bold text-lg tracking-widest tp-navy-text">{c.pin}</span>
+                      <span className="tp-display font-bold text-base tracking-wide tp-navy-text">{c.password}</span>
                       <button onClick={() => actions.dismissCredential(c.id)} className="text-xs tp-slate-text hover:tp-red-text"><X size={14} /></button>
                     </div>
                   </div>
@@ -675,12 +682,13 @@ function AdminView({ state, actions }) {
                     <div className="font-semibold">{p.name}</div>
                     <div className="flex items-center gap-2 mt-1">
                       <DeptBadge dept={p.dept} />
+                      {p.requestedRole === "manager" && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-blue-text" style={{ background: "#0071CE18" }}>Applied as Manager</span>}
                       <span className="text-xs tp-slate-text">requested {p.requestedAt}</span>
                     </div>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <select id={`role-${p.id}`} defaultValue="trainee" className="tp-input text-sm w-auto">
+                  <select id={`role-${p.id}`} defaultValue={p.requestedRole || "trainee"} className="tp-input text-sm w-auto">
                     <option value="trainee">Trainee</option>
                     <option value="manager">Manager</option>
                     <option value="admin">Admin (my team)</option>
@@ -1651,31 +1659,31 @@ function MonthlyFeedbackView({ state, managerId, actions }) {
 }
 
 
-/* ---------------------------------- LOGIN GATES (name + PIN, no company data) ---------------------------------- */
+/* ---------------------------------- LOGIN GATES (name + password, no company data) ---------------------------------- */
 function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp, onPreview }) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [pin, setPin] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
   const tryLogin = () => {
     const full = `${firstName.trim()} ${lastName.trim()}`.trim().toLowerCase();
-    const match = employees.find(e => e.name.toLowerCase() === full && e.pin === pin);
+    const match = employees.find(e => e.name.toLowerCase() === full && e.password === password);
     if (match) { setError(""); onSuccess(match.id); }
-    else setError("Name or PIN didn't match — check with your manager if you're unsure of your PIN.");
+    else setError("Name or password didn't match.");
   };
 
   return (
     <div className="tp-card p-6 max-w-sm mx-auto text-center mt-6">
       <GraduationCap size={28} className="tp-navy-text mx-auto mb-2" />
       <div className="font-semibold mb-1">Employee login</div>
-      <div className="text-xs tp-slate-text mb-4">Enter your name and the 4-digit PIN your manager gave you.</div>
+      <div className="text-xs tp-slate-text mb-4">Enter your name and the password you chose when you registered.</div>
       <div className="grid gap-2">
         <div className="grid grid-cols-2 gap-2">
           <input className="tp-input" placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} />
           <input className="tp-input" placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} />
         </div>
-        <input className="tp-input text-center tracking-widest" placeholder="PIN" maxLength={4} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ""))} />
+        <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
         <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Sign up for access →</button>
@@ -1685,54 +1693,81 @@ function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp, onPreview }) {
   );
 }
 
-function ManagerLoginGate({ managers, onSuccess, onPreview }) {
+function ManagerLoginGate({ managers, onSuccess, onGoToSignUp, onPreview }) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [pin, setPin] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
   const tryLogin = () => {
     const full = `${firstName.trim()} ${lastName.trim()}`.trim().toLowerCase();
-    const match = managers.find(m => m.name.toLowerCase() === full && m.pin === pin);
+    const match = managers.find(m => m.name.toLowerCase() === full && m.password === password);
     if (match) { setError(""); onSuccess(match.id); }
-    else setError("Name or PIN didn't match.");
+    else setError("Name or password didn't match.");
   };
 
   return (
     <div className="tp-card p-6 max-w-sm mx-auto text-center mt-6">
       <UserCog size={28} className="tp-navy-text mx-auto mb-2" />
       <div className="font-semibold mb-1">Manager login</div>
-      <div className="text-xs tp-slate-text mb-4">Enter your name and your 4-digit PIN.</div>
+      <div className="text-xs tp-slate-text mb-4">Enter your name and the password you chose when you registered.</div>
       <div className="grid gap-2">
         <div className="grid grid-cols-2 gap-2">
           <input className="tp-input" placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} />
           <input className="tp-input" placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} />
         </div>
-        <input className="tp-input text-center tracking-widest" placeholder="PIN" maxLength={4} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ""))} />
+        <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
+        <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Register as a manager →</button>
         <button onClick={onPreview} className="text-xs tp-slate-text mt-2">Admin: skip login for testing →</button>
       </div>
     </div>
   );
 }
 
-function SignUpView({ onSubmit, managers }) {
+function AdminLoginGate({ onSuccess }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  const tryLogin = () => {
+    if (username.trim() === "CX Training" && password === "Amex@1234") { setError(""); onSuccess(); }
+    else setError("Username or password didn't match.");
+  };
+
+  return (
+    <div className="tp-card p-6 max-w-sm mx-auto text-center mt-6">
+      <Shield size={28} className="tp-navy-text mx-auto mb-2" />
+      <div className="font-semibold mb-1">Admin login</div>
+      <div className="text-xs tp-slate-text mb-4">Restricted to the training team.</div>
+      <div className="grid gap-2">
+        <input className="tp-input" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} />
+        <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && tryLogin()} />
+        {error && <div className="text-xs tp-red-text">{error}</div>}
+        <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
+      </div>
+    </div>
+  );
+}
+
+function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
+  const [applyingAs, setApplyingAs] = useState(defaultRole);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [dept, setDept] = useState(LIVE_DEPARTMENTS[0].name);
   const [managerId, setManagerId] = useState(managers[0]?.id);
-  const [pin, setPin] = useState("");
-  const [confirmPin, setConfirmPin] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
   const submit = () => {
     if (!firstName.trim() || !lastName.trim()) { setError("Enter your first and last name."); return; }
-    if (pin.length !== 4) { setError("Choose a 4-digit PIN."); return; }
-    if (pin !== confirmPin) { setError("PINs don't match."); return; }
+    if (!isValidPassword(password)) { setError(`Password doesn't meet the requirements. ${PASSWORD_GUIDELINE}`); return; }
+    if (password !== confirmPassword) { setError("Passwords don't match."); return; }
     setError("");
-    onSubmit(`${firstName.trim()} ${lastName.trim()}`, dept, managerId, pin);
+    onSubmit(`${firstName.trim()} ${lastName.trim()}`, dept, applyingAs === "trainee" ? managerId : null, password, applyingAs);
     setSubmitted(true);
   };
 
@@ -1742,13 +1777,19 @@ function SignUpView({ onSubmit, managers }) {
         <div className="tp-pop">
           <ClipboardCheck size={32} className="tp-blue-text mx-auto mb-3" />
           <div className="font-semibold mb-1">Request submitted</div>
-          <div className="text-sm tp-slate-text">Your access is pending approval from the training team. Once approved, log in with your name and the PIN you just chose.</div>
+          <div className="text-sm tp-slate-text">Your access is pending approval from the training team. Once approved, log in with your name and the password you just chose.</div>
         </div>
       ) : (
         <div className="grid gap-3">
           <UserCog size={28} className="tp-navy-text mx-auto mb-1" />
           <div className="font-semibold">Sign up</div>
-          <div className="text-xs tp-slate-text -mt-2">No company email or ID needed — just your name, department, manager, and a PIN you'll remember.</div>
+          <div className="text-xs tp-slate-text -mt-2">No company email or ID needed — just your name, department, and a password you'll remember.</div>
+
+          <div className="flex gap-1 p-1 tp-ice-bg rounded-lg">
+            <button onClick={() => setApplyingAs("trainee")} className={`flex-1 text-xs font-medium py-1.5 rounded-md ${applyingAs === "trainee" ? "tp-btn-primary" : "tp-slate-text"}`}>Trainee</button>
+            <button onClick={() => setApplyingAs("manager")} className={`flex-1 text-xs font-medium py-1.5 rounded-md ${applyingAs === "manager" ? "tp-btn-primary" : "tp-slate-text"}`}>Manager</button>
+          </div>
+
           <div className="grid grid-cols-2 gap-2">
             <input className="tp-input" placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} />
             <input className="tp-input" placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} />
@@ -1757,21 +1798,24 @@ function SignUpView({ onSubmit, managers }) {
           <select className="tp-input" value={dept} onChange={e => setDept(e.target.value)}>
             {LIVE_DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
           </select>
-          {managers.length > 0 ? (
-            <>
-              <label className="text-xs tp-slate-text text-left -mb-2">Manager</label>
-              <select className="tp-input" value={managerId} onChange={e => setManagerId(e.target.value)}>
-                {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
-            </>
-          ) : (
-            <div className="text-xs tp-slate-text text-left">No managers registered yet — the admin team will assign one once your account is approved.</div>
+          {applyingAs === "trainee" && (
+            managers.length > 0 ? (
+              <>
+                <label className="text-xs tp-slate-text text-left -mb-2">Manager</label>
+                <select className="tp-input" value={managerId} onChange={e => setManagerId(e.target.value)}>
+                  {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </>
+            ) : (
+              <div className="text-xs tp-slate-text text-left">No managers registered yet — the admin team will assign one once your account is approved.</div>
+            )
           )}
-          <label className="text-xs tp-slate-text text-left -mb-2">Choose a 4-digit PIN</label>
+          <label className="text-xs tp-slate-text text-left -mb-2">Choose a password</label>
           <div className="grid grid-cols-2 gap-2">
-            <input className="tp-input text-center tracking-widest" placeholder="PIN" maxLength={4} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ""))} />
-            <input className="tp-input text-center tracking-widest" placeholder="Confirm PIN" maxLength={4} value={confirmPin} onChange={e => setConfirmPin(e.target.value.replace(/\D/g, ""))} />
+            <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
+            <input type="password" className="tp-input" placeholder="Confirm password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} />
           </div>
+          <div className="text-[11px] tp-slate-text text-left -mt-1">{PASSWORD_GUIDELINE}</div>
           {error && <div className="text-xs tp-red-text">{error}</div>}
           <button onClick={submit} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Submit for approval</button>
         </div>
@@ -1784,7 +1828,7 @@ function SignUpView({ onSubmit, managers }) {
 export default function TrainingPlatformPrototype() {
   const [employees, setEmployees] = useState([
     ...initialEmployees,
-    ...initialManagers.map(m => ({ id: m.id, name: m.name, dept: m.dept, role: "manager", managerId: null, points: 0, streak: 0, status: "active", pin: m.pin })),
+    ...initialManagers.map(m => ({ id: m.id, name: m.name, dept: m.dept, role: "manager", managerId: null, points: 0, streak: 0, status: "active", password: m.password })),
   ]);
   const [modules, setModules] = useState(initialModules);
   const [assignments, setAssignments] = useState(initialAssignments);
@@ -1800,8 +1844,10 @@ export default function TrainingPlatformPrototype() {
   const [role, setRole] = useState("admin");
   const [demoUserId, setDemoUserId] = useState(1);
   const [showSignUp, setShowSignUp] = useState(false);
+  const [signUpDefaultRole, setSignUpDefaultRole] = useState("trainee");
   const [loggedInEmployeeId, setLoggedInEmployeeId] = useState(null);
   const [loggedInManagerId, setLoggedInManagerId] = useState(null);
+  const [adminAuthenticated, setAdminAuthenticated] = useState(false);
   const [previewMode, setPreviewMode] = useState(false);
   const [dataStatus, setDataStatus] = useState({ loading: true, error: null, connected: false });
   const [deptMaps, setDeptMaps] = useState({ nameToId: {}, idToName: {} });
@@ -1922,20 +1968,20 @@ export default function TrainingPlatformPrototype() {
     },
     approve: async (id, assignedRole, managerId) => {
       const p = pending.find(p => p.id === id);
-      const pin = p.pin || generatePin();
+      const password = p.password || generateTempPassword();
       const finalManagerId = managerId || managers[0]?.id;
-      const localEmp = { name: p.name, dept: p.dept, role: assignedRole, managerId: finalManagerId, points: 0, streak: 0, status: "active", pin };
+      const localEmp = { name: p.name, dept: p.dept, role: assignedRole, managerId: assignedRole === "manager" ? null : finalManagerId, points: 0, streak: 0, status: "active", password };
       try {
         const [inserted] = await sbInsert("employees", [toDbEmployee(localEmp, deptMaps.nameToId)]);
         await sbDelete("pending_signups", "id", id);
         const newEmp = fromDbEmployee(inserted, deptMaps.idToName);
         setEmployees([...employees, newEmp]);
-        if (!p.pin) setCredentialsToShare([{ id: newEmp.id, name: newEmp.name, pin }, ...credentialsToShare]);
-        logActivity(`${p.name} approved as ${assignedRole}, reporting to ${managerName(managers, finalManagerId)}.`, "approval", null, newEmp.id);
+        if (!p.password) setCredentialsToShare([{ id: newEmp.id, name: newEmp.name, password }, ...credentialsToShare]);
+        logActivity(`${p.name} approved as ${assignedRole}${assignedRole === "manager" ? "" : `, reporting to ${managerName(managers, finalManagerId)}`}.`, "approval", null, newEmp.id);
       } catch (err) {
         const newId = Date.now();
         setEmployees([...employees, { id: newId, ...localEmp }]);
-        if (!p.pin) setCredentialsToShare([{ id: newId, name: p.name, pin }, ...credentialsToShare]);
+        if (!p.password) setCredentialsToShare([{ id: newId, name: p.name, password }, ...credentialsToShare]);
         setDataStatus({ ...dataStatus, error: `Couldn't save approval to the database: ${err.message}` });
       }
       setPending(pending.filter(x => x.id !== id));
@@ -1971,15 +2017,15 @@ export default function TrainingPlatformPrototype() {
       if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed" }).catch(() => {});
       logActivity(`${emp?.name || "Employee"} completed quiz for "${mod?.title}" — scored ${score}%.`, "quiz_completed", null, employeeId);
     },
-    signUp: async (name, dept, managerId, pin) => {
+    signUp: async (name, dept, managerId, password, requestedRole = "trainee") => {
       const { first_name, last_name } = splitName(name);
       try {
         const [inserted] = await sbInsert("pending_signups", [{
-          first_name, last_name, department_id: deptMaps.nameToId[dept] || null, requested_manager_id: managerId, pin,
+          first_name, last_name, department_id: deptMaps.nameToId[dept] || null, requested_manager_id: managerId, password, requested_role: requestedRole,
         }]);
         setPending([...pending, fromDbPending(inserted, deptMaps.idToName)]);
       } catch (err) {
-        setPending([...pending, { id: Date.now(), name, dept, managerId, requestedAt: "just now", pin }]);
+        setPending([...pending, { id: Date.now(), name, dept, managerId, requestedAt: "just now", password, requestedRole }]);
         setDataStatus({ ...dataStatus, error: `Couldn't save sign-up to database: ${err.message}` });
       }
     },
@@ -2072,18 +2118,18 @@ export default function TrainingPlatformPrototype() {
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save endorsement to database: ${err.message}` })); }
     },
     bulkImportEmployees: async (rows) => {
-      const withPins = rows.map(r => ({ ...r, pin: generatePin() }));
+      const withPasswords = rows.map(r => ({ ...r, password: generateTempPassword() }));
       try {
-        const dbRows = withPins.map(r => toDbEmployee({ name: r.name, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", pin: r.pin }, deptMaps.nameToId));
+        const dbRows = withPasswords.map(r => toDbEmployee({ name: r.name, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", password: r.password }, deptMaps.nameToId));
         const inserted = await sbInsert("employees", dbRows);
         const newEmployees = inserted.map(row => fromDbEmployee(row, deptMaps.idToName));
         setEmployees([...employees, ...newEmployees]);
-        setCredentialsToShare([...newEmployees.map(e => ({ id: e.id, name: e.name, pin: e.pin })), ...credentialsToShare]);
+        setCredentialsToShare([...newEmployees.map(e => ({ id: e.id, name: e.name, password: e.password })), ...credentialsToShare]);
         logActivity(`Bulk imported ${newEmployees.length} employees via Excel/CSV.`, "bulk_import", null, null);
       } catch (err) {
-        const newEmployees = withPins.map((r, i) => ({ id: Date.now() + i, name: r.name, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", pin: r.pin }));
+        const newEmployees = withPasswords.map((r, i) => ({ id: Date.now() + i, name: r.name, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", password: r.password }));
         setEmployees([...employees, ...newEmployees]);
-        setCredentialsToShare([...newEmployees.map(e => ({ id: e.id, name: e.name, pin: e.pin })), ...credentialsToShare]);
+        setCredentialsToShare([...newEmployees.map(e => ({ id: e.id, name: e.name, password: e.password })), ...credentialsToShare]);
         setDataStatus({ ...dataStatus, error: `Couldn't save import to database: ${err.message}` });
       }
     },
@@ -2185,7 +2231,7 @@ export default function TrainingPlatformPrototype() {
           </div>
           <div className="tp-card p-1 flex gap-1 items-center">
             {Object.entries(roleMeta).map(([key, meta]) => (
-              <button key={key} onClick={() => { setRole(key); setShowSignUp(false); setLoggedInEmployeeId(null); setLoggedInManagerId(null); setPreviewMode(false); }}
+              <button key={key} onClick={() => { setRole(key); setShowSignUp(false); setLoggedInEmployeeId(null); setLoggedInManagerId(null); setPreviewMode(false); setAdminAuthenticated(false); }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${role === key ? "tp-tab-active" : "tp-tab hover:bg-gray-50"}`}>
                 <meta.icon size={13} /> {meta.label}
               </button>
@@ -2216,7 +2262,7 @@ export default function TrainingPlatformPrototype() {
 
         <div className="tp-glass p-3 md:p-5">
           {role === "trainee" && !loggedInEmployeeId && !showSignUp && !previewMode && (
-            <EmployeeLoginGate employees={employees} onSuccess={setLoggedInEmployeeId} onGoToSignUp={() => setShowSignUp(true)} onPreview={() => setPreviewMode(true)} />
+            <EmployeeLoginGate employees={employees} onSuccess={setLoggedInEmployeeId} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} onPreview={() => setPreviewMode(true)} />
           )}
           {role === "trainee" && previewMode && !loggedInEmployeeId && (
             <div className="flex items-center gap-2 mb-4">
@@ -2234,8 +2280,8 @@ export default function TrainingPlatformPrototype() {
             </div>
           )}
 
-          {role === "manager" && !loggedInManagerId && !previewMode && (
-            <ManagerLoginGate managers={managers} onSuccess={setLoggedInManagerId} onPreview={() => setPreviewMode(true)} />
+          {role === "manager" && !loggedInManagerId && !showSignUp && !previewMode && (
+            <ManagerLoginGate managers={managers} onSuccess={setLoggedInManagerId} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} onPreview={() => setPreviewMode(true)} />
           )}
           {role === "manager" && previewMode && !loggedInManagerId && (
             <div className="flex items-center gap-2 mb-4">
@@ -2253,9 +2299,12 @@ export default function TrainingPlatformPrototype() {
             </div>
           )}
 
-          {role === "admin" && <AdminView state={state} actions={actions} />}
+          {role === "admin" && !adminAuthenticated && <AdminLoginGate onSuccess={() => setAdminAuthenticated(true)} />}
+          {role === "admin" && adminAuthenticated && <AdminView state={state} actions={actions} />}
           {role === "manager" && loggedInManagerId && <ManagerView state={state} managerId={loggedInManagerId} actions={actions} />}
-          {role === "trainee" && showSignUp && <SignUpView onSubmit={actions.signUp} managers={managers} />}
+          {(role === "trainee" || role === "manager") && showSignUp && (
+            <SignUpView onSubmit={async (...args) => { await actions.signUp(...args); }} managers={managers} defaultRole={signUpDefaultRole} />
+          )}
           {role === "trainee" && loggedInEmployeeId && <TraineeView state={state} employeeId={loggedInEmployeeId} actions={actions} />}
         </div>
       </div>
