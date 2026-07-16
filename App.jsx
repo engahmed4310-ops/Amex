@@ -60,63 +60,24 @@ const Theme = () => (
 );
 
 /* ---------------------------------- MOCK DATA ---------------------------------- */
-const initialEmployees = [
-  { id: 1, name: "Sara Al-Otaibi", dept: "Mass", role: "trainee", managerId: 101, points: 480, streak: 4, status: "active", pin: "4821" },
-  { id: 2, name: "Faisal Al-Harbi", dept: "Mass", role: "trainee", managerId: 101, points: 210, streak: 1, status: "active", pin: "3390" },
-  { id: 3, name: "Noura Al-Qahtani", dept: "Platinum", role: "trainee", managerId: 102, points: 630, streak: 7, status: "active", pin: "7715" },
-  { id: 4, name: "Khalid Al-Zahrani", dept: "Platinum", role: "trainee", managerId: 102, points: 95, streak: 0, status: "active", pin: "2204" },
-  { id: 5, name: "Lama Al-Dosari", dept: "Centurion", role: "trainee", managerId: 101, points: 340, streak: 2, status: "active", pin: "9067" },
-];
+const initialEmployees = [];
 
-const initialManagers = [
-  { id: 101, name: "Omar Al-Ghamdi", dept: "Operations", pin: "1120" },
-  { id: 102, name: "Reem Al-Sulaiman", dept: "Compliance", pin: "5543" },
-];
+const initialManagers = [];
 
-const initialModules = [
-  { id: 1, title: "AML & Financial Crime Awareness", desc: "Core anti-money-laundering principles and red flags.", points: 100, hasQuiz: true, mandatory: true },
-  { id: 2, title: "Customer Data Privacy (PDPL)", desc: "Handling customer data under KSA's PDPL.", points: 80, hasQuiz: true, mandatory: true },
-  { id: 3, title: "Service Excellence Standards", desc: "Card-member service expectations and etiquette.", points: 60, hasQuiz: false, mandatory: false },
-];
+const initialModules = [];
 
-const initialClassTrainings = [
-  {
-    id: 9001, name: "AML Refresher Workshop", date: "2026-07-20",
-    sessions: [{ date: "2026-07-20", hours: 3 }, { date: "2026-07-21", hours: 2 }],
-    quizEnabled: true,
-    enrollments: [
-      { employeeId: 3, quizScore: 90, comments: [{ text: "Engaged well, asked strong questions.", date: "2026-07-20" }] },
-    ],
-  },
-];
+const initialClassTrainings = [];
 
-const initialNotifications = [
-  { id: 1, text: "Noura Al-Qahtani was enrolled in \"AML Refresher Workshop\" by Reem Al-Sulaiman.", date: "2026-07-20" },
-];
+const initialNotifications = [];
 
 const initialMonthlyFeedback = [];
 const initialCoachingSessions = [];
 
-const initialAssignments = [
-  { id: 1, employeeId: 1, moduleId: 1, progress: 100, timeSpentMin: 42, quizScore: 92, status: "completed" },
-  { id: 2, employeeId: 1, moduleId: 2, progress: 60, timeSpentMin: 18, quizScore: null, status: "in_progress" },
-  { id: 3, employeeId: 2, moduleId: 1, progress: 30, timeSpentMin: 9, quizScore: null, status: "in_progress" },
-  { id: 4, employeeId: 3, moduleId: 1, progress: 100, timeSpentMin: 35, quizScore: 100, status: "completed" },
-  { id: 5, employeeId: 3, moduleId: 2, progress: 100, timeSpentMin: 25, quizScore: 88, status: "completed" },
-  { id: 6, employeeId: 4, moduleId: 1, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started" },
-  { id: 7, employeeId: 5, moduleId: 3, progress: 100, timeSpentMin: 15, quizScore: null, status: "completed" },
-];
+const initialAssignments = [];
 
-const initialPending = [
-  { id: 501, name: "Yousef Al-Anazi", dept: "Platinum", requestedAt: "2 days ago" },
-  { id: 502, name: "Hind Al-Muteiri", dept: "Mass", requestedAt: "1 day ago" },
-];
+const initialPending = [];
 
-const initialQuiz = [
-  { id: 1, q: "What is the primary purpose of AML controls?", options: ["Increase sales", "Detect and prevent illicit fund flows", "Reduce paperwork", "Speed up onboarding"], correct: 1 },
-  { id: 2, q: "A 'red flag' transaction is best described as:", options: ["A large but explainable transfer", "One matching a customer's normal profile", "One inconsistent with known customer behavior", "Any transaction over 100 SAR"], correct: 2 },
-  { id: 3, q: "Suspicious activity should be reported to:", options: ["A colleague informally", "The compliance/MLRO function", "The customer directly", "Social media"], correct: 1 },
-];
+const initialQuiz = [];
 
 function badgeForPoints(points) {
   if (points >= 600) return { label: "Gold", color: "var(--gold)" };
@@ -1606,10 +1567,16 @@ function SignUpView({ onSubmit, managers }) {
           <select className="tp-input" value={dept} onChange={e => setDept(e.target.value)}>
             {LIVE_DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
           </select>
-          <label className="text-xs tp-slate-text text-left -mb-2">Manager</label>
-          <select className="tp-input" value={managerId} onChange={e => setManagerId(e.target.value)}>
-            {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
+          {managers.length > 0 ? (
+            <>
+              <label className="text-xs tp-slate-text text-left -mb-2">Manager</label>
+              <select className="tp-input" value={managerId} onChange={e => setManagerId(e.target.value)}>
+                {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            </>
+          ) : (
+            <div className="text-xs tp-slate-text text-left">No managers registered yet — the admin team will assign one once your account is approved.</div>
+          )}
           <label className="text-xs tp-slate-text text-left -mb-2">Choose a 4-digit PIN</label>
           <div className="grid grid-cols-2 gap-2">
             <input className="tp-input text-center tracking-widest" placeholder="PIN" maxLength={4} value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ""))} />
@@ -1662,16 +1629,7 @@ export default function TrainingPlatformPrototype() {
         LIVE_DEPARTMENTS = depts.map(d => ({ name: d.name, color: d.color }));
         setDepartmentsVersion(v => v + 1);
 
-        let dbManagers = await sbSelect("employees", "role=eq.manager&select=*");
-        if (dbManagers.length === 0) {
-          // First run — seed the two demo managers into the real database so
-          // manager_id references work from here on.
-          const seeded = await sbInsert("employees", initialManagers.map(m => ({
-            first_name: splitName(m.name).first_name, last_name: splitName(m.name).last_name,
-            department_id: nameToId[m.dept] || null, role: "manager", points: 0, streak: 0, status: "active", pin: m.pin,
-          })));
-          dbManagers = seeded;
-        }
+        const dbManagers = await sbSelect("employees", "role=eq.manager&select=*");
         const dbTrainees = await sbSelect("employees", "role=eq.trainee&select=*");
         const dbPending = await sbSelect("pending_signups", "select=*");
 
