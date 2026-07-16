@@ -167,7 +167,7 @@ const sbHeaders = {
 
 async function sbSelect(table, query = "") {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, { headers: sbHeaders });
-  if (!res.ok) throw new Error(`${table} select failed (${res.status})`);
+  if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`${table} select failed (${res.status}): ${body}`); }
   return res.json();
 }
 async function sbInsert(table, rows) {
@@ -176,8 +176,12 @@ async function sbInsert(table, rows) {
     headers: { ...sbHeaders, Prefer: "return=representation" },
     body: JSON.stringify(rows),
   });
-  if (!res.ok) throw new Error(`${table} insert failed (${res.status})`);
+  if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`${table} insert failed (${res.status}): ${body}`); }
   return res.json();
+}
+async function sbDelete(table, column, value) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, { method: "DELETE", headers: sbHeaders });
+  if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`${table} delete failed (${res.status}): ${body}`); }
 }
 async function sbDelete(table, column, value) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, { method: "DELETE", headers: sbHeaders });
