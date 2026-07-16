@@ -188,7 +188,7 @@ function splitName(fullName) {
 function toDbEmployee(appEmp, deptNameToId) {
   const { first_name, last_name } = splitName(appEmp.name);
   return {
-    first_name, last_name,
+    first_name, last_name, email: appEmp.email,
     department_id: deptNameToId[appEmp.dept] || null,
     manager_id: appEmp.managerId || null,
     role: appEmp.role, points: appEmp.points || 0, streak: appEmp.streak || 0,
@@ -197,7 +197,7 @@ function toDbEmployee(appEmp, deptNameToId) {
 }
 function fromDbEmployee(row, deptIdToName) {
   return {
-    id: row.id, name: `${row.first_name} ${row.last_name}`.trim(),
+    id: row.id, name: `${row.first_name} ${row.last_name}`.trim(), email: row.email,
     dept: deptIdToName[row.department_id] || LIVE_DEPARTMENTS[0].name,
     managerId: row.manager_id, role: row.role, points: row.points, streak: row.streak,
     status: row.status, password: row.password,
@@ -205,7 +205,7 @@ function fromDbEmployee(row, deptIdToName) {
 }
 function fromDbPending(row, deptIdToName) {
   return {
-    id: row.id, name: `${row.first_name} ${row.last_name}`.trim(),
+    id: row.id, name: `${row.first_name} ${row.last_name}`.trim(), email: row.email,
     dept: deptIdToName[row.department_id] || LIVE_DEPARTMENTS[0].name,
     managerId: row.requested_manager_id, requestedAt: row.requested_at?.slice(0, 10) || "recently",
     password: row.password, requestedRole: row.requested_role || "trainee",
@@ -314,6 +314,9 @@ function AdminView({ state, actions }) {
   const [showQuizBuilder, setShowQuizBuilder] = useState(null);
   const [newModule, setNewModule] = useState({ title: "", desc: "", points: 50, mandatory: false, attachments: [] });
   const [quizDraft, setQuizDraft] = useState([{ q: "", options: ["", "", "", ""], correct: 0 }]);
+  const [qbAiContent, setQbAiContent] = useState("");
+  const [qbAiGenerating, setQbAiGenerating] = useState(false);
+  const [qbAiError, setQbAiError] = useState("");
   const [deptFilter, setDeptFilter] = useState("all");
   const [uploadFileName, setUploadFileName] = useState("");
   const [uploadFileObj, setUploadFileObj] = useState(null);
@@ -392,13 +395,14 @@ function AdminView({ state, actions }) {
           const get = (...keys) => { for (const k of keys) { const found = Object.keys(r).find(rk => rk.toLowerCase().trim() === k); if (found) return String(r[found]).trim(); } return ""; };
           const first = get("first name", "firstname");
           const last = get("last name", "lastname");
+          const email = get("email", "work email", "e-mail");
           const dept = get("department", "category");
           const mgr = get("manager", "manager name");
           const matchedMgr = managers.find(m => m.name.toLowerCase().includes(mgr.toLowerCase()) || mgr.toLowerCase().includes(m.name.toLowerCase()));
           const matchedDept = LIVE_DEPARTMENTS.find(d => d.name.toLowerCase() === dept.toLowerCase())?.name || LIVE_DEPARTMENTS[0].name;
-          return { name: `${first} ${last}`.trim(), dept: matchedDept, managerId: matchedMgr?.id || managers[0]?.id, managerLabel: matchedMgr?.name || `Unmatched — defaulting to ${managers[0]?.name}` };
+          return { name: `${first} ${last}`.trim(), email, dept: matchedDept, managerId: matchedMgr?.id || managers[0]?.id, managerLabel: matchedMgr?.name || `Unmatched — defaulting to ${managers[0]?.name}` };
         }).filter(r => r.name);
-        if (parsed.length === 0) setBulkError("No valid rows found. Make sure the sheet has First Name, Last Name, Department, and Manager columns.");
+        if (parsed.length === 0) setBulkError("No valid rows found. Make sure the sheet has First Name, Last Name, Email, Department, and Manager columns.");
         setBulkRows(parsed);
       } catch (err) {
         setBulkError("Couldn't read that file — make sure it's a valid .xlsx or .csv.");
@@ -410,6 +414,35 @@ function AdminView({ state, actions }) {
   const confirmBulkImport = () => {
     actions.bulkImportEmployees(bulkRows);
     setBulkRows([]); setBulkFileName("");
+  };
+
+  const generateQuizForModule = async (moduleId) => {
+    const mod = state.modules.find(m => m.id === moduleId);
+    const content = qbAiContent.trim() || `${mod?.title || ""}. ${mod?.desc || ""}`;
+    if (!content.trim()) { setQbAiError("Add a title/description to the module, or paste some content above, first."); return; }
+    setQbAiGenerating(true); setQbAiError("");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6", max_tokens: 1000,
+          messages: [{
+            role: "user",
+            content: `You are creating a multiple-choice quiz for an employee training module at a financial services company in Saudi Arabia. Based on the training content below, write exactly 5 quiz questions, each with 4 answer options and exactly one correct answer. Respond ONLY with valid JSON and nothing else — no markdown fences, no preamble — in this exact shape: [{"q": "question text", "options": ["a","b","c","d"], "correct": 0}]. Training content:\n\n${content}`
+          }]
+        })
+      });
+      const data = await res.json();
+      const textOut = (data.content || []).map(c => c.text || "").join("");
+      const clean = textOut.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      setQuizDraft(parsed);
+    } catch (err) {
+      setQbAiError("Couldn't generate questions automatically — try adding more content, or write them manually below.");
+    } finally {
+      setQbAiGenerating(false);
+    }
   };
 
   const generateQuizFromUpload = async () => {
@@ -575,7 +608,7 @@ function AdminView({ state, actions }) {
         <div>
           <div className="tp-card p-4 mb-4">
             <div className="font-semibold mb-1 flex items-center gap-2"><Sparkles size={16} className="tp-gold-text" /> Upload training material</div>
-            <p className="text-xs tp-slate-text mb-3">Upload a PowerPoint file, paste its key content below, and generate a quiz automatically. The module PDF and file conversion happen on the backend — this demo generates the quiz live using AI.</p>
+            <p className="text-xs tp-slate-text mb-3">Upload a PowerPoint or PDF file — it's saved and attached to the module immediately. Paste its key content below so AI can generate a quiz from it.</p>
             <input type="file" accept=".ppt,.pptx,.pdf" onChange={e => { setUploadFileName(e.target.files[0]?.name || ""); setUploadFileObj(e.target.files[0] || null); }}
               className="text-xs mb-2 block" />
             {uploadFileName && <div className="text-xs tp-blue-text mb-2">Selected: {uploadFileName} → will be converted to PDF on upload</div>}
@@ -610,7 +643,7 @@ function AdminView({ state, actions }) {
                     </div>
                   )}
                 </div>
-                <button onClick={() => { setQuizDraft(state.quizzes[m.id]?.length ? state.quizzes[m.id] : [{ q: "", options: ["", "", "", ""], correct: 0 }]); setShowQuizBuilder(m.id); }}
+                <button onClick={() => { setQuizDraft(state.quizzes[m.id]?.length ? state.quizzes[m.id] : [{ q: "", options: ["", "", "", ""], correct: 0 }]); setQbAiContent(""); setQbAiError(""); setShowQuizBuilder(m.id); }}
                   className="text-sm tp-blue-text font-medium flex items-center gap-1">
                   {m.hasQuiz ? "Edit quiz" : "Add quiz"} <ChevronRight size={14} />
                 </button>
@@ -628,7 +661,7 @@ function AdminView({ state, actions }) {
         <div>
           <div className="tp-card p-4 mb-6">
             <div className="font-semibold mb-1 flex items-center gap-2"><Upload size={16} className="tp-blue-text" /> Mass enrollment via Excel/CSV</div>
-            <p className="text-xs tp-slate-text mb-3">Upload a spreadsheet with columns: First Name, Last Name, Department (Mass/Platinum/Centurion), Manager. Employees are added directly — no individual approval needed since you're uploading the list yourself.</p>
+            <p className="text-xs tp-slate-text mb-3">Upload a spreadsheet with columns: First Name, Last Name, Email, Department (Mass/Platinum/Centurion), Manager. Employees are added directly — no individual approval needed since you're uploading the list yourself.</p>
             <input type="file" accept=".xlsx,.xls,.csv" className="text-xs" onChange={e => e.target.files[0] && parseBulkFile(e.target.files[0])} />
             {bulkError && <div className="text-xs tp-red-text mt-2">{bulkError}</div>}
             {bulkRows.length > 0 && (
@@ -637,12 +670,12 @@ function AdminView({ state, actions }) {
                 <div className="tp-card overflow-x-auto tp-scrollbar mb-3">
                   <table className="w-full text-xs">
                     <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
-                      <th className="p-2">Name</th><th className="p-2">Department</th><th className="p-2">Manager</th>
+                      <th className="p-2">Name</th><th className="p-2">Email</th><th className="p-2">Department</th><th className="p-2">Manager</th>
                     </tr></thead>
                     <tbody>
                       {bulkRows.map((r, i) => (
                         <tr key={i} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
-                          <td className="p-2">{r.name}</td><td className="p-2"><DeptBadge dept={r.dept} /></td><td className="p-2">{r.managerLabel}</td>
+                          <td className="p-2">{r.name}</td><td className="p-2 tp-slate-text">{r.email || "—"}</td><td className="p-2"><DeptBadge dept={r.dept} /></td><td className="p-2">{r.managerLabel}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -848,7 +881,8 @@ function AdminView({ state, actions }) {
               <div className="flex flex-wrap gap-2">
                 {newModule.attachments.map((f, i) => (
                   <span key={i} className="text-xs px-2 py-1 rounded-full tp-ice-bg flex items-center gap-1">
-                    <Paperclip size={11} /> {f.name}
+                    <Paperclip size={11} />
+                    <a href={f.url} target="_blank" rel="noreferrer" className="tp-blue-text underline">{f.name}</a>
                     <button onClick={() => setNewModule({ ...newModule, attachments: newModule.attachments.filter((_, fi) => fi !== i) })}><X size={11} /></button>
                   </span>
                 ))}
@@ -862,6 +896,16 @@ function AdminView({ state, actions }) {
       {showQuizBuilder && (
         <Modal title="Quiz builder" onClose={() => setShowQuizBuilder(null)}>
           <div className="grid gap-4">
+            <div className="tp-card p-3" style={{ background: "#C9A24B10" }}>
+              <div className="text-xs font-semibold mb-2 flex items-center gap-1"><Sparkles size={13} className="tp-gold-text" /> Generate questions with AI</div>
+              <textarea className="tp-input mb-2" rows={3} placeholder="Paste or describe the training content to base the quiz on (or leave blank to use the module's title and description)"
+                value={qbAiContent} onChange={e => setQbAiContent(e.target.value)} />
+              <button onClick={() => generateQuizForModule(showQuizBuilder)} disabled={qbAiGenerating}
+                className="tp-btn-gold rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-40">
+                {qbAiGenerating ? "Generating…" : "Generate 5 questions with AI"}
+              </button>
+              {qbAiError && <div className="text-xs tp-red-text mt-2">{qbAiError}</div>}
+            </div>
             {quizDraft.map((q, qi) => (
               <div key={qi} className="border rounded-lg p-3" style={{ borderColor: "var(--line)" }}>
                 <input className="tp-input mb-2" placeholder={`Question ${qi + 1}`} value={q.q}
@@ -1661,29 +1705,24 @@ function MonthlyFeedbackView({ state, managerId, actions }) {
 
 /* ---------------------------------- LOGIN GATES (name + password, no company data) ---------------------------------- */
 function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp, onPreview }) {
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
   const tryLogin = () => {
-    const full = `${firstName.trim()} ${lastName.trim()}`.trim().toLowerCase();
-    const match = employees.find(e => e.name.toLowerCase() === full && e.password === password);
+    const match = employees.find(e => e.email?.toLowerCase() === email.trim().toLowerCase() && e.password === password);
     if (match) { setError(""); onSuccess(match.id); }
-    else setError("Name or password didn't match.");
+    else setError("Email or password didn't match.");
   };
 
   return (
     <div className="tp-card p-6 max-w-sm mx-auto text-center mt-6">
       <GraduationCap size={28} className="tp-navy-text mx-auto mb-2" />
       <div className="font-semibold mb-1">Employee login</div>
-      <div className="text-xs tp-slate-text mb-4">Enter your name and the password you chose when you registered.</div>
+      <div className="text-xs tp-slate-text mb-4">Enter your work email and the password you chose when you registered.</div>
       <div className="grid gap-2">
-        <div className="grid grid-cols-2 gap-2">
-          <input className="tp-input" placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} />
-          <input className="tp-input" placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} />
-        </div>
-        <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
+        <input type="email" className="tp-input" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
+        <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && tryLogin()} />
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
         <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Sign up for access →</button>
@@ -1694,29 +1733,24 @@ function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp, onPreview }) {
 }
 
 function ManagerLoginGate({ managers, onSuccess, onGoToSignUp, onPreview }) {
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
   const tryLogin = () => {
-    const full = `${firstName.trim()} ${lastName.trim()}`.trim().toLowerCase();
-    const match = managers.find(m => m.name.toLowerCase() === full && m.password === password);
+    const match = managers.find(m => m.email?.toLowerCase() === email.trim().toLowerCase() && m.password === password);
     if (match) { setError(""); onSuccess(match.id); }
-    else setError("Name or password didn't match.");
+    else setError("Email or password didn't match.");
   };
 
   return (
     <div className="tp-card p-6 max-w-sm mx-auto text-center mt-6">
       <UserCog size={28} className="tp-navy-text mx-auto mb-2" />
       <div className="font-semibold mb-1">Manager login</div>
-      <div className="text-xs tp-slate-text mb-4">Enter your name and the password you chose when you registered.</div>
+      <div className="text-xs tp-slate-text mb-4">Enter your work email and the password you chose when you registered.</div>
       <div className="grid gap-2">
-        <div className="grid grid-cols-2 gap-2">
-          <input className="tp-input" placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} />
-          <input className="tp-input" placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} />
-        </div>
-        <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} />
+        <input type="email" className="tp-input" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
+        <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && tryLogin()} />
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
         <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Register as a manager →</button>
@@ -1755,6 +1789,7 @@ function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
   const [applyingAs, setApplyingAs] = useState(defaultRole);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
   const [dept, setDept] = useState(LIVE_DEPARTMENTS[0].name);
   const [managerId, setManagerId] = useState(managers[0]?.id);
   const [password, setPassword] = useState("");
@@ -1764,10 +1799,11 @@ function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
 
   const submit = () => {
     if (!firstName.trim() || !lastName.trim()) { setError("Enter your first and last name."); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { setError("Enter a valid work email."); return; }
     if (!isValidPassword(password)) { setError(`Password doesn't meet the requirements. ${PASSWORD_GUIDELINE}`); return; }
     if (password !== confirmPassword) { setError("Passwords don't match."); return; }
     setError("");
-    onSubmit(`${firstName.trim()} ${lastName.trim()}`, dept, applyingAs === "trainee" ? managerId : null, password, applyingAs);
+    onSubmit(`${firstName.trim()} ${lastName.trim()}`, email.trim().toLowerCase(), dept, applyingAs === "trainee" ? managerId : null, password, applyingAs);
     setSubmitted(true);
   };
 
@@ -1777,13 +1813,13 @@ function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
         <div className="tp-pop">
           <ClipboardCheck size={32} className="tp-blue-text mx-auto mb-3" />
           <div className="font-semibold mb-1">Request submitted</div>
-          <div className="text-sm tp-slate-text">Your access is pending approval from the training team. Once approved, log in with your name and the password you just chose.</div>
+          <div className="text-sm tp-slate-text">Your access is pending approval from the training team. Once approved, log in with your work email and the password you just chose.</div>
         </div>
       ) : (
         <div className="grid gap-3">
           <UserCog size={28} className="tp-navy-text mx-auto mb-1" />
           <div className="font-semibold">Sign up</div>
-          <div className="text-xs tp-slate-text -mt-2">No company email or ID needed — just your name, department, and a password you'll remember.</div>
+          <div className="text-xs tp-slate-text -mt-2">Your work email is used to log in — no separate ID or PIN needed.</div>
 
           <div className="flex gap-1 p-1 tp-ice-bg rounded-lg">
             <button onClick={() => setApplyingAs("trainee")} className={`flex-1 text-xs font-medium py-1.5 rounded-md ${applyingAs === "trainee" ? "tp-btn-primary" : "tp-slate-text"}`}>Trainee</button>
@@ -1794,6 +1830,8 @@ function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
             <input className="tp-input" placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} />
             <input className="tp-input" placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} />
           </div>
+          <label className="text-xs tp-slate-text text-left -mb-2">Work email</label>
+          <input type="email" className="tp-input" placeholder="you@company.com" value={email} onChange={e => setEmail(e.target.value)} />
           <label className="text-xs tp-slate-text text-left -mb-2">Department</label>
           <select className="tp-input" value={dept} onChange={e => setDept(e.target.value)}>
             {LIVE_DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
@@ -1825,7 +1863,7 @@ function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
 }
 
 /* ---------------------------------- ROOT APP ---------------------------------- */
-export default function TrainingPlatformPrototype() {
+export default function AmplifyTrainingApp() {
   const [employees, setEmployees] = useState([
     ...initialEmployees,
     ...initialManagers.map(m => ({ id: m.id, name: m.name, dept: m.dept, role: "manager", managerId: null, points: 0, streak: 0, status: "active", password: m.password })),
@@ -1842,7 +1880,7 @@ export default function TrainingPlatformPrototype() {
   const [credentialsToShare, setCredentialsToShare] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [role, setRole] = useState("admin");
-  const [demoUserId, setDemoUserId] = useState(1);
+  const [previewUserId, setPreviewUserId] = useState(1);
   const [showSignUp, setShowSignUp] = useState(false);
   const [signUpDefaultRole, setSignUpDefaultRole] = useState("trainee");
   const [loggedInEmployeeId, setLoggedInEmployeeId] = useState(null);
@@ -1970,7 +2008,7 @@ export default function TrainingPlatformPrototype() {
       const p = pending.find(p => p.id === id);
       const password = p.password || generateTempPassword();
       const finalManagerId = managerId || managers[0]?.id;
-      const localEmp = { name: p.name, dept: p.dept, role: assignedRole, managerId: assignedRole === "manager" ? null : finalManagerId, points: 0, streak: 0, status: "active", password };
+      const localEmp = { name: p.name, email: p.email, dept: p.dept, role: assignedRole, managerId: assignedRole === "manager" ? null : finalManagerId, points: 0, streak: 0, status: "active", password };
       try {
         const [inserted] = await sbInsert("employees", [toDbEmployee(localEmp, deptMaps.nameToId)]);
         await sbDelete("pending_signups", "id", id);
@@ -2017,31 +2055,31 @@ export default function TrainingPlatformPrototype() {
       if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed" }).catch(() => {});
       logActivity(`${emp?.name || "Employee"} completed quiz for "${mod?.title}" — scored ${score}%.`, "quiz_completed", null, employeeId);
     },
-    signUp: async (name, dept, managerId, password, requestedRole = "trainee") => {
+    signUp: async (name, email, dept, managerId, password, requestedRole = "trainee") => {
       const { first_name, last_name } = splitName(name);
       try {
         const [inserted] = await sbInsert("pending_signups", [{
-          first_name, last_name, department_id: deptMaps.nameToId[dept] || null, requested_manager_id: managerId, password, requested_role: requestedRole,
+          first_name, last_name, email, department_id: deptMaps.nameToId[dept] || null, requested_manager_id: managerId, password, requested_role: requestedRole,
         }]);
         setPending([...pending, fromDbPending(inserted, deptMaps.idToName)]);
       } catch (err) {
-        setPending([...pending, { id: Date.now(), name, dept, managerId, requestedAt: "just now", password, requestedRole }]);
+        setPending([...pending, { id: Date.now(), name, email, dept, managerId, requestedAt: "just now", password, requestedRole }]);
         setDataStatus({ ...dataStatus, error: `Couldn't save sign-up to database: ${err.message}` });
       }
     },
     addClassTraining: async (c, actorName) => {
+      const tempId = `temp-${Date.now()}`;
+      const optimistic = { id: tempId, name: c.name, date: c.date, quizEnabled: false, sessions: [], enrollments: [] };
+      setClassTrainings(prev => [...prev, optimistic]);
+      managers.forEach(m => notify(`New training class added: "${c.name}" on ${c.date} — you can enroll your team from the calendar.`, "manager", m.id));
       try {
         const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false }]);
         const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, sessions: [], enrollments: [] };
-        setClassTrainings(prev => [...prev, created]);
-        managers.forEach(m => notify(`New training class added: "${created.name}" on ${created.date} — you can enroll your team from the calendar.`, "manager", m.id));
+        setClassTrainings(prev => prev.map(cls => cls.id === tempId ? created : cls));
         return created;
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't save class to database: ${err.message}` }));
-        const fallback = { ...c };
-        setClassTrainings(prev => [...prev, fallback]);
-        managers.forEach(m => notify(`New training class added: "${fallback.name}" on ${fallback.date} — you can enroll your team from the calendar.`, "manager", m.id));
-        return fallback;
+        return optimistic;
       }
     },
     logSession: async (classId, date, hours) => {
@@ -2120,14 +2158,14 @@ export default function TrainingPlatformPrototype() {
     bulkImportEmployees: async (rows) => {
       const withPasswords = rows.map(r => ({ ...r, password: generateTempPassword() }));
       try {
-        const dbRows = withPasswords.map(r => toDbEmployee({ name: r.name, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", password: r.password }, deptMaps.nameToId));
+        const dbRows = withPasswords.map(r => toDbEmployee({ name: r.name, email: r.email, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", password: r.password }, deptMaps.nameToId));
         const inserted = await sbInsert("employees", dbRows);
         const newEmployees = inserted.map(row => fromDbEmployee(row, deptMaps.idToName));
         setEmployees([...employees, ...newEmployees]);
         setCredentialsToShare([...newEmployees.map(e => ({ id: e.id, name: e.name, password: e.password })), ...credentialsToShare]);
         logActivity(`Bulk imported ${newEmployees.length} employees via Excel/CSV.`, "bulk_import", null, null);
       } catch (err) {
-        const newEmployees = withPasswords.map((r, i) => ({ id: Date.now() + i, name: r.name, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", password: r.password }));
+        const newEmployees = withPasswords.map((r, i) => ({ id: Date.now() + i, name: r.name, email: r.email, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", password: r.password }));
         setEmployees([...employees, ...newEmployees]);
         setCredentialsToShare([...newEmployees.map(e => ({ id: e.id, name: e.name, password: e.password })), ...credentialsToShare]);
         setDataStatus({ ...dataStatus, error: `Couldn't save import to database: ${err.message}` });
@@ -2267,10 +2305,10 @@ export default function TrainingPlatformPrototype() {
           {role === "trainee" && previewMode && !loggedInEmployeeId && (
             <div className="flex items-center gap-2 mb-4">
               <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Preview mode — pick anyone:</span>
-              <select className="tp-input w-auto text-xs" value={demoUserId} onChange={e => setDemoUserId(Number(e.target.value))}>
+              <select className="tp-input w-auto text-xs" value={previewUserId} onChange={e => setPreviewUserId(Number(e.target.value))}>
                 {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
               </select>
-              <button onClick={() => setLoggedInEmployeeId(demoUserId)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">View</button>
+              <button onClick={() => setLoggedInEmployeeId(previewUserId)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">View</button>
             </div>
           )}
           {role === "trainee" && loggedInEmployeeId && (
@@ -2286,10 +2324,10 @@ export default function TrainingPlatformPrototype() {
           {role === "manager" && previewMode && !loggedInManagerId && (
             <div className="flex items-center gap-2 mb-4">
               <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Preview mode — pick anyone:</span>
-              <select className="tp-input w-auto text-xs" value={demoUserId} onChange={e => setDemoUserId(Number(e.target.value))}>
+              <select className="tp-input w-auto text-xs" value={previewUserId} onChange={e => setPreviewUserId(Number(e.target.value))}>
                 {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
-              <button onClick={() => setLoggedInManagerId(demoUserId)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">View</button>
+              <button onClick={() => setLoggedInManagerId(previewUserId)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">View</button>
             </div>
           )}
           {role === "manager" && loggedInManagerId && (
