@@ -130,8 +130,14 @@ const DEPARTMENTS = [
   { name: "Platinum", color: "#7A8699" },
   { name: "Centurion", color: "#0B2545" },
 ];
+// Mutable live copy — starts as the seed list above, gets replaced with real
+// data from Supabase on load, and grows when the admin adds a department.
+// Components read this instead of the static DEPARTMENTS constant so new
+// departments show up everywhere without threading a prop through the tree.
+let LIVE_DEPARTMENTS = [...DEPARTMENTS];
+const DEPT_COLOR_POOL = ["#0071CE", "#7A8699", "#0B2545", "#C9A24B", "#1F9D64", "#D6534A", "#7A5FC4", "#3AAFA9"];
 function deptColor(name) {
-  return DEPARTMENTS.find(d => d.name === name)?.color || "var(--slate)";
+  return LIVE_DEPARTMENTS.find(d => d.name === name)?.color || "var(--slate)";
 }
 function managerName(managers, managerId) {
   return managers.find(m => m.id === managerId)?.name || "Unassigned";
@@ -183,9 +189,14 @@ async function sbDelete(table, column, value) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, { method: "DELETE", headers: sbHeaders });
   if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`${table} delete failed (${res.status}): ${body}`); }
 }
-async function sbDelete(table, column, value) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, { method: "DELETE", headers: sbHeaders });
-  if (!res.ok) throw new Error(`${table} delete failed (${res.status})`);
+async function sbUpdate(table, column, value, patch) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${column}=eq.${value}`, {
+    method: "PATCH",
+    headers: { ...sbHeaders, Prefer: "return=representation" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`${table} update failed (${res.status}): ${body}`); }
+  return res.json();
 }
 
 // Convert between the app's simple shape ({name, dept, managerId, ...})
@@ -207,7 +218,7 @@ function toDbEmployee(appEmp, deptNameToId) {
 function fromDbEmployee(row, deptIdToName) {
   return {
     id: row.id, name: `${row.first_name} ${row.last_name}`.trim(),
-    dept: deptIdToName[row.department_id] || DEPARTMENTS[0].name,
+    dept: deptIdToName[row.department_id] || LIVE_DEPARTMENTS[0].name,
     managerId: row.manager_id, role: row.role, points: row.points, streak: row.streak,
     status: row.status, pin: row.pin,
   };
@@ -215,7 +226,7 @@ function fromDbEmployee(row, deptIdToName) {
 function fromDbPending(row, deptIdToName) {
   return {
     id: row.id, name: `${row.first_name} ${row.last_name}`.trim(),
-    dept: deptIdToName[row.department_id] || DEPARTMENTS[0].name,
+    dept: deptIdToName[row.department_id] || LIVE_DEPARTMENTS[0].name,
     managerId: row.requested_manager_id, requestedAt: row.requested_at?.slice(0, 10) || "recently",
     pin: row.pin,
   };
@@ -290,6 +301,7 @@ function AdminView({ state, actions }) {
   const [reportQuestion, setReportQuestion] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState("");
+  const [newDeptName, setNewDeptName] = useState("");
 
   const handleReportFile = (file) => {
     setReportFileName(file.name);
@@ -347,7 +359,7 @@ function AdminView({ state, actions }) {
           const dept = get("department", "category");
           const mgr = get("manager", "manager name");
           const matchedMgr = managers.find(m => m.name.toLowerCase().includes(mgr.toLowerCase()) || mgr.toLowerCase().includes(m.name.toLowerCase()));
-          const matchedDept = DEPARTMENTS.find(d => d.name.toLowerCase() === dept.toLowerCase())?.name || DEPARTMENTS[0].name;
+          const matchedDept = LIVE_DEPARTMENTS.find(d => d.name.toLowerCase() === dept.toLowerCase())?.name || LIVE_DEPARTMENTS[0].name;
           return { name: `${first} ${last}`.trim(), dept: matchedDept, managerId: matchedMgr?.id || managers[0]?.id, managerLabel: matchedMgr?.name || `Unmatched — defaulting to ${managers[0]?.name}` };
         }).filter(r => r.name);
         if (parsed.length === 0) setBulkError("No valid rows found. Make sure the sheet has First Name, Last Name, Department, and Manager columns.");
@@ -470,7 +482,7 @@ function AdminView({ state, actions }) {
           <div className="tp-card p-4 mb-4">
             <div className="font-semibold mb-3 text-sm flex items-center gap-2"><Crown size={15} className="tp-gold-text" /> Top performer by department — this month</div>
             <div className="grid gap-2">
-              {DEPARTMENTS.map(d => {
+              {LIVE_DEPARTMENTS.map(d => {
                 const top = topEmployeeOfDept(state.employees, d.name);
                 if (!top || top.points === 0) return (
                   <div key={d.name} className="flex items-center justify-between p-2 rounded-lg tp-ice-bg">
@@ -495,10 +507,9 @@ function AdminView({ state, actions }) {
           </div>
           <div className="tp-card p-4">
             <div className="font-semibold mb-3 text-sm">Employees by department</div>
-            <div className="flex flex-wrap gap-2">
-              {DEPARTMENTS.map(d => {
+            <div className="flex flex-wrap gap-2 mb-3">
+              {LIVE_DEPARTMENTS.map(d => {
                 const count = state.employees.filter(e => e.dept === d.name).length;
-                if (!count) return null;
                 return (
                   <div key={d.name} className="flex items-center gap-2 px-3 py-1.5 rounded-full" style={{ background: d.color + "15" }}>
                     <span className="w-2 h-2 rounded-full" style={{ background: d.color }} />
@@ -507,6 +518,13 @@ function AdminView({ state, actions }) {
                   </div>
                 );
               })}
+            </div>
+            <div className="flex items-center gap-2 pt-2" style={{ borderTop: "1px dashed var(--line)" }}>
+              <input className="tp-input w-auto text-sm" placeholder="New department name" value={newDeptName} onChange={e => setNewDeptName(e.target.value)} />
+              <button onClick={() => { if (newDeptName.trim()) { actions.addDepartment(newDeptName.trim()); setNewDeptName(""); } }}
+                className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium flex items-center gap-1">
+                <PlusCircle size={14} /> Add department
+              </button>
             </div>
           </div>
         </div>
@@ -655,7 +673,15 @@ function AdminView({ state, actions }) {
                   <tr key={e.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
                     <td className="p-3 font-medium">{e.name}</td>
                     <td className="p-3"><DeptBadge dept={e.dept} /></td>
-                    <td className="p-3 tp-slate-text">{managerName(managers, e.managerId)}</td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        {!e.managerId && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-red-text" style={{ background: "#D6534A18" }}>No manager</span>}
+                        <select className="tp-input text-xs w-auto" value={e.managerId || ""} onChange={ev => actions.reassignManager(e.id, ev.target.value)}>
+                          <option value="" disabled>Assign manager…</option>
+                          {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -672,7 +698,7 @@ function AdminView({ state, actions }) {
             </button>
             <select className="tp-input w-auto text-sm" value={deptFilter} onChange={e => setDeptFilter(e.target.value)}>
               <option value="all">All departments</option>
-              {DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+              {LIVE_DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
             </select>
           </div>
           <div className="tp-card overflow-x-auto tp-scrollbar">
@@ -1543,7 +1569,7 @@ function ManagerLoginGate({ managers, onSuccess, onPreview }) {
 function SignUpView({ onSubmit, managers }) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [dept, setDept] = useState(DEPARTMENTS[0].name);
+  const [dept, setDept] = useState(LIVE_DEPARTMENTS[0].name);
   const [managerId, setManagerId] = useState(managers[0]?.id);
   const [pin, setPin] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
@@ -1578,7 +1604,7 @@ function SignUpView({ onSubmit, managers }) {
           </div>
           <label className="text-xs tp-slate-text text-left -mb-2">Department</label>
           <select className="tp-input" value={dept} onChange={e => setDept(e.target.value)}>
-            {DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+            {LIVE_DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
           </select>
           <label className="text-xs tp-slate-text text-left -mb-2">Manager</label>
           <select className="tp-input" value={managerId} onChange={e => setManagerId(e.target.value)}>
@@ -1624,14 +1650,17 @@ export default function TrainingPlatformPrototype() {
   const [deptMaps, setDeptMaps] = useState({ nameToId: {}, idToName: {} });
   const [trainingRequests, setTrainingRequests] = useState([]);
   const [reports, setReports] = useState([]);
+  const [departmentsVersion, setDepartmentsVersion] = useState(0);
 
   useEffect(() => {
     (async () => {
       try {
-        const depts = await sbSelect("departments", "select=id,name");
+        const depts = await sbSelect("departments", "select=id,name,color");
         const nameToId = {}, idToName = {};
         depts.forEach(d => { nameToId[d.name] = d.id; idToName[d.id] = d.name; });
         setDeptMaps({ nameToId, idToName });
+        LIVE_DEPARTMENTS = depts.map(d => ({ name: d.name, color: d.color }));
+        setDepartmentsVersion(v => v + 1);
 
         let dbManagers = await sbSelect("employees", "role=eq.manager&select=*");
         if (dbManagers.length === 0) {
@@ -1786,6 +1815,24 @@ export default function TrainingPlatformPrototype() {
       notify(`Your training request "${req.title}" was ${approve ? "approved and added to the calendar" : "declined"}.`, "manager", req.managerId);
     },
     saveReport: (report) => setReports([report, ...reports]),
+    addDepartment: async (name) => {
+      if (LIVE_DEPARTMENTS.some(d => d.name.toLowerCase() === name.toLowerCase())) return;
+      const color = DEPT_COLOR_POOL[LIVE_DEPARTMENTS.length % DEPT_COLOR_POOL.length];
+      try {
+        const [inserted] = await sbInsert("departments", [{ name, color }]);
+        LIVE_DEPARTMENTS = [...LIVE_DEPARTMENTS, { name: inserted.name, color: inserted.color }];
+        setDeptMaps({ nameToId: { ...deptMaps.nameToId, [inserted.name]: inserted.id }, idToName: { ...deptMaps.idToName, [inserted.id]: inserted.name } });
+      } catch (err) {
+        LIVE_DEPARTMENTS = [...LIVE_DEPARTMENTS, { name, color }];
+        setDataStatus({ ...dataStatus, error: `Couldn't save department to database: ${err.message}` });
+      }
+      setDepartmentsVersion(v => v + 1);
+    },
+    reassignManager: async (employeeId, newManagerId) => {
+      setEmployees(employees.map(e => e.id === employeeId ? { ...e, managerId: newManagerId } : e));
+      try { await sbUpdate("employees", "id", employeeId, { manager_id: newManagerId }); }
+      catch (err) { setDataStatus({ ...dataStatus, error: `Couldn't save manager assignment to database: ${err.message}` }); }
+    },
   };
 
   const roleMeta = {
