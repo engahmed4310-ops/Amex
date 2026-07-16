@@ -160,6 +160,18 @@ async function sbUpdate(table, column, value, patch) {
   return res.json();
 }
 
+const STORAGE_BUCKET = "training-files";
+async function sbUploadFile(file, folder = "modules") {
+  const path = `${folder}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${path}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`File upload failed (${res.status}): ${body}`); }
+  return { path, url: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`, name: file.name, type: file.type, size: file.size };
+}
+
 // Convert between the app's simple shape ({name, dept, managerId, ...})
 // and the database's shape ({first_name, last_name, department_id, manager_id, ...})
 function splitName(fullName) {
@@ -191,6 +203,52 @@ function fromDbPending(row, deptIdToName) {
     managerId: row.requested_manager_id, requestedAt: row.requested_at?.slice(0, 10) || "recently",
     pin: row.pin,
   };
+}
+
+// --- Modules & quizzes ---
+function fromDbModule(row) {
+  return { id: row.id, title: row.title, desc: row.description || "", points: row.points, mandatory: row.mandatory, hasQuiz: row.has_quiz, attachments: [] };
+}
+function fromDbAttachment(row) {
+  return { id: row.id, name: row.file_name, url: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.storage_path}`, type: row.file_type, size: row.file_size_bytes, moduleId: row.module_id };
+}
+function fromDbQuizQuestion(row) {
+  return { id: row.id, q: row.question, options: row.options, correct: row.correct_index };
+}
+// --- Assignments ---
+function fromDbAssignment(row) {
+  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status };
+}
+// --- Class trainings (nested: sessions, enrollments, comments) ---
+function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
+  return classRows.map(c => ({
+    id: c.id, name: c.name, date: c.class_date, quizEnabled: c.quiz_enabled,
+    sessions: sessionRows.filter(s => s.class_id === c.id).map(s => ({ date: s.session_date, hours: Number(s.hours) })),
+    enrollments: enrollRows.filter(e => e.class_id === c.id).map(e => ({
+      employeeId: e.employee_id, quizScore: e.quiz_score,
+      comments: commentRows.filter(cm => cm.enrollment_id === e.id).map(cm => ({ text: cm.comment, date: cm.created_at?.slice(0, 10) })),
+      _enrollmentDbId: e.id,
+    })),
+  }));
+}
+// --- Notifications, feedback, endorsements, coaching ---
+function fromDbNotification(row) {
+  return { id: row.id, text: row.message, audience: row.audience || "admin", recipientId: row.recipient_id, date: row.created_at?.slice(0, 10) };
+}
+function fromDbMonthlyFeedback(row) {
+  return { id: row.id, managerId: row.manager_id, employeeId: row.employee_id, month: row.month_key, needsTraining: row.needs_training, comment: row.comment, submittedAt: row.submitted_at?.slice(0, 10) };
+}
+function fromDbEndorsement(row) {
+  return { employeeId: row.employee_id, managerId: row.manager_id, month: row.month_key };
+}
+function fromDbCoaching(row) {
+  return { id: row.id, employeeId: row.employee_id, managerId: row.manager_id, category: row.category, notes: row.notes, escalated: row.escalated, date: row.session_date };
+}
+function fromDbTrainingRequest(row) {
+  return { id: row.id, managerId: row.manager_id, title: row.title, reason: row.reason, suggestedDate: row.suggested_date, status: row.status, requestedAt: row.requested_at?.slice(0, 10) };
+}
+function fromDbReport(row) {
+  return { id: row.id, fileName: row.file_name, question: row.question, analysis: row.analysis, date: row.created_at?.slice(0, 10), fileUrl: row.storage_path ? `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.storage_path}` : null };
 }
 
 const DeptBadge = ({ dept }) => (
@@ -251,6 +309,7 @@ function AdminView({ state, actions }) {
   const [quizDraft, setQuizDraft] = useState([{ q: "", options: ["", "", "", ""], correct: 0 }]);
   const [deptFilter, setDeptFilter] = useState("all");
   const [uploadFileName, setUploadFileName] = useState("");
+  const [uploadFileObj, setUploadFileObj] = useState(null);
   const [materialText, setMaterialText] = useState("");
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
@@ -258,14 +317,18 @@ function AdminView({ state, actions }) {
   const [bulkFileName, setBulkFileName] = useState("");
   const [bulkError, setBulkError] = useState("");
   const [reportFileName, setReportFileName] = useState("");
+  const [reportFileObj, setReportFileObj] = useState(null);
   const [reportContent, setReportContent] = useState("");
   const [reportQuestion, setReportQuestion] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState("");
   const [newDeptName, setNewDeptName] = useState("");
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [attachError, setAttachError] = useState("");
 
   const handleReportFile = (file) => {
     setReportFileName(file.name);
+    setReportFileObj(file);
     const ext = file.name.split(".").pop().toLowerCase();
     if (["xlsx", "xls", "csv"].includes(ext)) {
       const reader = new FileReader();
@@ -296,8 +359,13 @@ function AdminView({ state, actions }) {
       });
       const data = await res.json();
       const text = (data.content || []).map(c => c.text || "").join("");
-      actions.saveReport({ id: Date.now(), fileName: reportFileName || "Pasted content", question: reportQuestion, analysis: text, date: new Date().toISOString().slice(0, 10) });
-      setReportQuestion("");
+      let fileInfo = {};
+      if (reportFileObj) {
+        try { const uploaded = await sbUploadFile(reportFileObj, "reports"); fileInfo = { storagePath: uploaded.path, fileSize: uploaded.size, fileUrl: uploaded.url }; }
+        catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't upload the report file: ${err.message}` })); }
+      }
+      actions.saveReport({ fileName: reportFileName || "Pasted content", question: reportQuestion, analysis: text, ...fileInfo });
+      setReportQuestion(""); setReportFileObj(null);
     } catch (err) {
       setAnalyzeError("Couldn't analyze that report — try again.");
     } finally {
@@ -357,12 +425,16 @@ function AdminView({ state, actions }) {
       const textOut = (data.content || []).map(c => c.text || "").join("");
       const clean = textOut.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
-      const newId = Date.now();
       const modTitle = uploadFileName.replace(/\.(pptx|ppt)$/i, "") || "Uploaded Training Module";
-      actions.addModule({ id: newId, title: modTitle, desc: materialText.slice(0, 140), points: 50, hasQuiz: false });
+      let attachments = [];
+      if (uploadFileObj) {
+        try { attachments = [await sbUploadFile(uploadFileObj, "modules")]; }
+        catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't upload the original file: ${err.message}` })); }
+      }
+      const created = await actions.addModule({ title: modTitle, desc: materialText.slice(0, 140), points: 50, mandatory: false, attachments });
       setQuizDraft(parsed);
-      setShowQuizBuilder(newId);
-      setMaterialText(""); setUploadFileName("");
+      setShowQuizBuilder(created.id);
+      setMaterialText(""); setUploadFileName(""); setUploadFileObj(null);
     } catch (err) {
       setGenError("Couldn't generate the quiz automatically — check the content and try again, or build the quiz manually below.");
     } finally {
@@ -414,6 +486,7 @@ function AdminView({ state, actions }) {
         { key: "approvals", label: "Approvals", icon: ClipboardCheck },
         { key: "analytics", label: "Analytics", icon: BarChart3 },
         { key: "reports", label: "Reports & Analysis", icon: FileText },
+        { key: "activity", label: "Activity Log", icon: Clock },
       ]} />
 
       {tab === "overview" && (
@@ -496,7 +569,7 @@ function AdminView({ state, actions }) {
           <div className="tp-card p-4 mb-4">
             <div className="font-semibold mb-1 flex items-center gap-2"><Sparkles size={16} className="tp-gold-text" /> Upload training material</div>
             <p className="text-xs tp-slate-text mb-3">Upload a PowerPoint file, paste its key content below, and generate a quiz automatically. The module PDF and file conversion happen on the backend — this demo generates the quiz live using AI.</p>
-            <input type="file" accept=".ppt,.pptx,.pdf" onChange={e => setUploadFileName(e.target.files[0]?.name || "")}
+            <input type="file" accept=".ppt,.pptx,.pdf" onChange={e => { setUploadFileName(e.target.files[0]?.name || ""); setUploadFileObj(e.target.files[0] || null); }}
               className="text-xs mb-2 block" />
             {uploadFileName && <div className="text-xs tp-blue-text mb-2">Selected: {uploadFileName} → will be converted to PDF on upload</div>}
             <textarea className="tp-input" rows={4} placeholder="Paste the slide content / key talking points here so the AI can write quiz questions from it"
@@ -530,7 +603,8 @@ function AdminView({ state, actions }) {
                     </div>
                   )}
                 </div>
-                <button onClick={() => setShowQuizBuilder(m.id)} className="text-sm tp-blue-text font-medium flex items-center gap-1">
+                <button onClick={() => { setQuizDraft(state.quizzes[m.id]?.length ? state.quizzes[m.id] : [{ q: "", options: ["", "", "", ""], correct: 0 }]); setShowQuizBuilder(m.id); }}
+                  className="text-sm tp-blue-text font-medium flex items-center gap-1">
                   {m.hasQuiz ? "Edit quiz" : "Add quiz"} <ChevronRight size={14} />
                 </button>
               </div>
@@ -721,10 +795,19 @@ function AdminView({ state, actions }) {
                 </div>
                 <div className="text-sm font-medium mb-2">{r.question}</div>
                 <div className="text-sm tp-slate-text whitespace-pre-wrap">{r.analysis}</div>
+                {r.fileUrl && (
+                  <a href={r.fileUrl} target="_blank" rel="noreferrer" className="text-xs tp-blue-text font-medium flex items-center gap-1 mt-2">
+                    <Paperclip size={11} /> View original file
+                  </a>
+                )}
               </div>
             ))}
           </div>
         </div>
+      )}
+
+      {tab === "activity" && (
+        <ActivityLogSection state={state} scope="admin" />
       )}
 
       {showNewModule && (
@@ -739,10 +822,20 @@ function AdminView({ state, actions }) {
               Mandatory presence — employee must complete this training
             </label>
             <label className="text-xs tp-slate-text">Attach files (PDF, PPTX, images, docs — any type)</label>
-            <input type="file" multiple className="text-xs" onChange={e => {
-              const files = Array.from(e.target.files).map(f => ({ name: f.name, size: f.size, type: f.type, url: URL.createObjectURL(f) }));
-              setNewModule({ ...newModule, attachments: [...newModule.attachments, ...files] });
+            <input type="file" multiple className="text-xs" onChange={async e => {
+              const files = Array.from(e.target.files);
+              setUploadingAttachment(true); setAttachError("");
+              try {
+                const uploaded = await Promise.all(files.map(f => sbUploadFile(f, "modules")));
+                setNewModule(nm => ({ ...nm, attachments: [...nm.attachments, ...uploaded] }));
+              } catch (err) {
+                setAttachError(`Couldn't upload file: ${err.message}`);
+              } finally {
+                setUploadingAttachment(false);
+              }
             }} />
+            {uploadingAttachment && <div className="text-xs tp-blue-text">Uploading…</div>}
+            {attachError && <div className="text-xs tp-red-text">{attachError}</div>}
             {newModule.attachments.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {newModule.attachments.map((f, i) => (
@@ -801,6 +894,7 @@ function ManagerView({ state, managerId, actions }) {
         { key: "classes", label: "In-Class Training", icon: GraduationCap },
         { key: "coaching", label: "Coaching & Comments", icon: Headphones },
         { key: "feedback", label: "Monthly Feedback", icon: ClipboardCheck },
+        { key: "activity", label: "Activity Log", icon: Clock },
       ]} />
 
       {tab === "team" && (
@@ -892,6 +986,10 @@ function ManagerView({ state, managerId, actions }) {
       {tab === "feedback" && (
         <MonthlyFeedbackView state={state} managerId={managerId} actions={actions} />
       )}
+
+      {tab === "activity" && (
+        <ActivityLogSection state={state} scope="manager" managerId={managerId} />
+      )}
     </div>
   );
 }
@@ -923,14 +1021,15 @@ function TraineeView({ state, employeeId, actions }) {
   ];
 
   const startQuiz = (moduleId) => { setActiveQuiz(moduleId); setQIndex(0); setAnswers([]); setResult(null); };
+  const currentQuiz = state.quizzes[activeQuiz] || [];
 
   const selectAnswer = (oi) => {
     const next = [...answers]; next[qIndex] = oi; setAnswers(next);
   };
 
   const finishQuiz = () => {
-    const correct = state.quiz.filter((q, i) => answers[i] === q.correct).length;
-    const score = Math.round((correct / state.quiz.length) * 100);
+    const correct = currentQuiz.filter((q, i) => answers[i] === q.correct).length;
+    const score = Math.round((correct / currentQuiz.length) * 100);
     setResult(score);
     actions.submitQuiz(employeeId, activeQuiz, score);
   };
@@ -1048,18 +1147,18 @@ function TraineeView({ state, employeeId, actions }) {
         <Modal title="Quiz" onClose={() => setActiveQuiz(null)}>
           {result == null ? (
             <div>
-              <div className="text-xs tp-slate-text mb-2">Question {qIndex + 1} of {state.quiz.length}</div>
-              <ProgressBar value={((qIndex) / state.quiz.length) * 100} />
-              <div className="font-semibold my-4">{state.quiz[qIndex].q}</div>
+              <div className="text-xs tp-slate-text mb-2">Question {qIndex + 1} of {currentQuiz.length}</div>
+              <ProgressBar value={((qIndex) / currentQuiz.length) * 100} />
+              <div className="font-semibold my-4">{currentQuiz[qIndex]?.q}</div>
               <div className="grid gap-2 mb-4">
-                {state.quiz[qIndex].options.map((opt, oi) => (
+                {currentQuiz[qIndex]?.options.map((opt, oi) => (
                   <button key={oi} onClick={() => selectAnswer(oi)}
                     className={`text-left tp-input ${answers[qIndex] === oi ? "tp-blue-bg text-white" : ""}`}>
                     {opt}
                   </button>
                 ))}
               </div>
-              {qIndex < state.quiz.length - 1 ? (
+              {qIndex < currentQuiz.length - 1 ? (
                 <button disabled={answers[qIndex] == null} onClick={() => setQIndex(qIndex + 1)} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-40">Next</button>
               ) : (
                 <button disabled={answers[qIndex] == null} onClick={finishQuiz} className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-40">Submit quiz</button>
@@ -1150,13 +1249,12 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
     ? activeClass.enrollments.filter(en => scope === "admin" || eligibleEmployees.some(e => e.id === en.employeeId))
     : [];
 
-  const createClass = (prefillDate) => {
+  const createClass = async (prefillDate) => {
     if (!newClass.name.trim() || !(newClass.date || prefillDate)) return;
-    const id = Date.now();
-    actions.addClassTraining({ id, name: newClass.name, date: prefillDate || newClass.date, sessions: [], quizEnabled: false, enrollments: [] }, actorName);
     setNewClass({ name: "", date: "" });
     setShowNewClass(false);
-    setClassTab(id);
+    const created = await actions.addClassTraining({ name: newClass.name, date: prefillDate || newClass.date }, actorName);
+    setClassTab(created.id);
   };
 
   const submitRequest = () => {
@@ -1402,6 +1500,98 @@ function CoachingSection({ state, managerId, team, actions, actorName }) {
   );
 }
 
+/* ---------------------------------- ACTIVITY LOG (period-based reporting, shared by role) ---------------------------------- */
+function defaultDateRange() {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - 30);
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+}
+
+function ActivityLogSection({ state, scope, managerId }) {
+  const initial = defaultDateRange();
+  const [fromDate, setFromDate] = useState(initial.from);
+  const [toDate, setToDate] = useState(initial.to);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [searched, setSearched] = useState(false);
+
+  const eligibleIds = scope === "manager" ? state.employees.filter(e => e.managerId === managerId).map(e => e.id) : null;
+
+  const search = async () => {
+    setLoading(true); setError(""); setSearched(true);
+    try {
+      const query = `select=*&created_at=gte.${fromDate}T00:00:00&created_at=lte.${toDate}T23:59:59&order=created_at.desc&limit=500`;
+      const data = await sbSelect("activity_log", query);
+      const filtered = scope === "admin" ? data
+        : data.filter(r => eligibleIds.includes(r.employee_id) || eligibleIds.includes(r.actor_id));
+      setRows(filtered);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportCSV = () => {
+    const csvRows = [["Date", "Type", "Description"], ...rows.map(r => [r.created_at, r.action_type, r.description])];
+    const csv = csvRows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `activity_log_${fromDate}_to_${toDate}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div>
+      <div className="tp-card p-4 mb-4">
+        <div className="font-semibold mb-1 flex items-center gap-2"><Clock size={16} className="tp-blue-text" /> Activity log — pull any period</div>
+        <p className="text-xs tp-slate-text mb-3">Every enrollment, quiz completion, coaching session, approval, and more is logged automatically. Pick a date range and pull it straight from the database.</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs tp-slate-text">From</label>
+          <input type="date" className="tp-input w-auto text-sm" value={fromDate} onChange={e => setFromDate(e.target.value)} />
+          <label className="text-xs tp-slate-text">To</label>
+          <input type="date" className="tp-input w-auto text-sm" value={toDate} onChange={e => setToDate(e.target.value)} />
+          <button onClick={search} disabled={loading} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-40">
+            {loading ? "Searching…" : "Search"}
+          </button>
+          {rows.length > 0 && (
+            <button onClick={exportCSV} className="tp-btn-gold rounded-lg px-3 py-2 text-xs font-semibold flex items-center gap-1">
+              <FileSpreadsheet size={14} /> Export CSV
+            </button>
+          )}
+        </div>
+        {error && <div className="text-xs tp-red-text mt-2">Couldn't load the log: {error}</div>}
+      </div>
+
+      {searched && !loading && (
+        <div className="tp-card overflow-x-auto tp-scrollbar">
+          {rows.length === 0 ? (
+            <div className="p-4 text-sm tp-slate-text">No activity in this period.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
+                <th className="p-3">Date</th><th className="p-3">Type</th><th className="p-3">Description</th>
+              </tr></thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
+                    <td className="p-3 tp-slate-text whitespace-nowrap">{r.created_at?.slice(0, 16).replace("T", " ")}</td>
+                    <td className="p-3"><span className="text-xs font-medium px-2 py-0.5 rounded-full tp-ice-bg tp-blue-text">{r.action_type}</span></td>
+                    <td className="p-3">{r.description}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------------- MONTHLY FEEDBACK (manager) ---------------------------------- */
 function MonthlyFeedbackView({ state, managerId, actions }) {
   const team = state.employees.filter(e => e.managerId === managerId);
@@ -1599,7 +1789,7 @@ export default function TrainingPlatformPrototype() {
   const [modules, setModules] = useState(initialModules);
   const [assignments, setAssignments] = useState(initialAssignments);
   const [pending, setPending] = useState(initialPending);
-  const [quiz, setQuiz] = useState(initialQuiz);
+  const [quizzes, setQuizzes] = useState({});
   const [classTrainings, setClassTrainings] = useState(initialClassTrainings);
   const [notifications, setNotifications] = useState(initialNotifications);
   const [monthlyFeedback, setMonthlyFeedback] = useState(initialMonthlyFeedback);
@@ -1632,9 +1822,49 @@ export default function TrainingPlatformPrototype() {
         const dbManagers = await sbSelect("employees", "role=eq.manager&select=*");
         const dbTrainees = await sbSelect("employees", "role=eq.trainee&select=*");
         const dbPending = await sbSelect("pending_signups", "select=*");
-
         setEmployees([...dbManagers, ...dbTrainees].map(r => fromDbEmployee(r, idToName)));
         setPending(dbPending.map(r => fromDbPending(r, idToName)));
+
+        const dbModules = await sbSelect("modules", "select=*");
+        const dbAttachments = await sbSelect("module_attachments", "select=*");
+        const attachmentsByModule = {};
+        dbAttachments.forEach(a => { (attachmentsByModule[a.module_id] ||= []).push(fromDbAttachment(a)); });
+        setModules(dbModules.map(m => ({ ...fromDbModule(m), attachments: attachmentsByModule[m.id] || [] })));
+
+        const dbQuizQuestions = await sbSelect("quiz_questions", "select=*&order=sort_order");
+        const quizMap = {};
+        dbQuizQuestions.forEach(q => { (quizMap[q.module_id] ||= []).push(fromDbQuizQuestion(q)); });
+        setQuizzes(quizMap);
+
+        const dbAssignments = await sbSelect("assignments", "select=*");
+        setAssignments(dbAssignments.map(fromDbAssignment));
+
+        const [dbClasses, dbSessions, dbEnrollments, dbComments] = await Promise.all([
+          sbSelect("class_trainings", "select=*"),
+          sbSelect("class_sessions", "select=*"),
+          sbSelect("class_enrollments", "select=*"),
+          sbSelect("class_comments", "select=*"),
+        ]);
+        setClassTrainings(assembleClassTrainings(dbClasses, dbSessions, dbEnrollments, dbComments));
+
+        const dbNotifications = await sbSelect("notifications", "select=*&order=created_at.desc");
+        setNotifications(dbNotifications.map(fromDbNotification));
+
+        const dbFeedback = await sbSelect("monthly_feedback", "select=*");
+        setMonthlyFeedback(dbFeedback.map(fromDbMonthlyFeedback));
+
+        const dbEndorsements = await sbSelect("endorsements", "select=*");
+        setEndorsements(dbEndorsements.map(fromDbEndorsement));
+
+        const dbCoaching = await sbSelect("coaching_sessions", "select=*");
+        setCoachingSessions(dbCoaching.map(fromDbCoaching));
+
+        const dbTrainingRequests = await sbSelect("training_requests", "select=*");
+        setTrainingRequests(dbTrainingRequests.map(fromDbTrainingRequest));
+
+        const dbReports = await sbSelect("reports", "select=*&order=created_at.desc");
+        setReports(dbReports.map(fromDbReport));
+
         setDataStatus({ loading: false, error: null, connected: true });
       } catch (err) {
         setDataStatus({ loading: false, error: err.message, connected: false });
@@ -1646,21 +1876,53 @@ export default function TrainingPlatformPrototype() {
   const myNotifications = role === "admin" ? notifications.filter(n => n.audience === "admin" || !n.audience)
     : role === "manager" ? notifications.filter(n => n.audience === "manager" && n.recipientId === loggedInManagerId)
     : notifications.filter(n => n.audience === "trainee" && n.recipientId === loggedInEmployeeId);
-  const state = { employees, modules, assignments, pending, quiz, classTrainings, notifications, monthlyFeedback, endorsements, coachingSessions, credentialsToShare, trainingRequests, reports };
+  const state = { employees, modules, assignments, pending, quizzes, classTrainings, notifications, monthlyFeedback, endorsements, coachingSessions, credentialsToShare, trainingRequests, reports };
 
   const notify = (text, audience = "admin", recipientId = null) => {
     setNotifications(prev => [{ id: Date.now() + Math.random(), text, audience, recipientId, date: new Date().toISOString().slice(0, 10) }, ...prev]);
+    sbInsert("notifications", [{ recipient_id: recipientId, message: text, audience }]).catch(() => {});
+  };
+
+  const logActivity = (description, actionType, actorId = null, employeeId = null) => {
+    sbInsert("activity_log", [{ actor_id: actorId, employee_id: employeeId, action_type: actionType, description }]).catch(() => {});
   };
 
   const actions = {
-    addModule: (m) => setModules([...modules, { hasQuiz: false, ...m }]),
-    saveQuiz: (moduleId, questions) => {
-      setQuiz(questions.map((q, i) => ({ id: i + 1, ...q })));
-      setModules(modules.map(m => m.id === moduleId ? { ...m, hasQuiz: true } : m));
+    addModule: async (m) => {
+      try {
+        const [inserted] = await sbInsert("modules", [{ title: m.title, description: m.desc, points: m.points, mandatory: !!m.mandatory, has_quiz: false }]);
+        const created = { ...fromDbModule(inserted), attachments: m.attachments || [] };
+        setModules(prev => [...prev, created]);
+        if (m.attachments?.length) {
+          const rows = m.attachments.map(f => ({ module_id: inserted.id, file_name: f.name, storage_path: f.path, file_type: f.type, file_size_bytes: f.size }));
+          sbInsert("module_attachments", rows).catch(err => setDataStatus(s => ({ ...s, error: `Couldn't save attachment records: ${err.message}` })));
+        }
+        logActivity(`Created module "${created.title}".`, "module_created", null, null);
+        return created;
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save module to database: ${err.message}` }));
+        const fallback = { id: Date.now(), hasQuiz: false, ...m };
+        setModules(prev => [...prev, fallback]);
+        return fallback;
+      }
+    },
+    saveQuiz: async (moduleId, questions) => {
+      try {
+        await sbDelete("quiz_questions", "module_id", moduleId).catch(() => {}); // clear any existing (edit case)
+        const rows = questions.map((q, i) => ({ module_id: moduleId, question: q.q, options: q.options, correct_index: q.correct, sort_order: i }));
+        const inserted = await sbInsert("quiz_questions", rows);
+        await sbUpdate("modules", "id", moduleId, { has_quiz: true });
+        setQuizzes(prev => ({ ...prev, [moduleId]: inserted.map(fromDbQuizQuestion) }));
+        setModules(prev => prev.map(m => m.id === moduleId ? { ...m, hasQuiz: true } : m));
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save quiz to database: ${err.message}` }));
+        setQuizzes(prev => ({ ...prev, [moduleId]: questions.map((q, i) => ({ id: i + 1, ...q })) }));
+        setModules(prev => prev.map(m => m.id === moduleId ? { ...m, hasQuiz: true } : m));
+      }
     },
     approve: async (id, assignedRole, managerId) => {
       const p = pending.find(p => p.id === id);
-      const pin = p.pin || generatePin(); // fallback for any legacy request without a self-chosen PIN
+      const pin = p.pin || generatePin();
       const finalManagerId = managerId || managers[0]?.id;
       const localEmp = { name: p.name, dept: p.dept, role: assignedRole, managerId: finalManagerId, points: 0, streak: 0, status: "active", pin };
       try {
@@ -1669,8 +1931,8 @@ export default function TrainingPlatformPrototype() {
         const newEmp = fromDbEmployee(inserted, deptMaps.idToName);
         setEmployees([...employees, newEmp]);
         if (!p.pin) setCredentialsToShare([{ id: newEmp.id, name: newEmp.name, pin }, ...credentialsToShare]);
+        logActivity(`${p.name} approved as ${assignedRole}, reporting to ${managerName(managers, finalManagerId)}.`, "approval", null, newEmp.id);
       } catch (err) {
-        // Fallback: keep working locally even if the database write failed, and surface it.
         const newId = Date.now();
         setEmployees([...employees, { id: newId, ...localEmp }]);
         if (!p.pin) setCredentialsToShare([{ id: newId, name: p.name, pin }, ...credentialsToShare]);
@@ -1683,17 +1945,31 @@ export default function TrainingPlatformPrototype() {
       try { await sbDelete("pending_signups", "id", id); }
       catch (err) { setDataStatus({ ...dataStatus, error: `Couldn't remove request from database: ${err.message}` }); }
     },
-    assign: (employeeId, moduleId, actorName) => {
+    assign: async (employeeId, moduleId, actorName) => {
       if (assignments.some(a => a.employeeId === employeeId && a.moduleId === moduleId)) return;
-      setAssignments([...assignments, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started" }]);
       const mod = modules.find(m => m.id === moduleId);
+      try {
+        const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started" }]);
+        setAssignments(prev => [...prev, fromDbAssignment(inserted)]);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save assignment to database: ${err.message}` }));
+        setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started" }]);
+      }
       notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}.`, "trainee", employeeId);
+      logActivity(`Assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}.`, "assignment", null, employeeId);
     },
-    submitQuiz: (employeeId, moduleId, score) => {
+    submitQuiz: async (employeeId, moduleId, score) => {
+      const existing = assignments.find(a => a.employeeId === employeeId && a.moduleId === moduleId);
       setAssignments(assignments.map(a => a.employeeId === employeeId && a.moduleId === moduleId
         ? { ...a, quizScore: score, progress: 100, status: "completed" } : a));
       const mod = modules.find(m => m.id === moduleId);
-      if (score >= 80) setEmployees(employees.map(e => e.id === employeeId ? { ...e, points: e.points + mod.points, streak: e.streak + 1 } : e));
+      const emp = employees.find(e => e.id === employeeId);
+      if (score >= 80 && mod && emp) {
+        setEmployees(employees.map(e => e.id === employeeId ? { ...e, points: e.points + mod.points, streak: e.streak + 1 } : e));
+        sbUpdate("employees", "id", employeeId, { points: emp.points + mod.points, streak: emp.streak + 1 }).catch(() => {});
+      }
+      if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed" }).catch(() => {});
+      logActivity(`${emp?.name || "Employee"} completed quiz for "${mod?.title}" — scored ${score}%.`, "quiz_completed", null, employeeId);
     },
     signUp: async (name, dept, managerId, pin) => {
       const { first_name, last_name } = splitName(name);
@@ -1707,35 +1983,93 @@ export default function TrainingPlatformPrototype() {
         setDataStatus({ ...dataStatus, error: `Couldn't save sign-up to database: ${err.message}` });
       }
     },
-    addClassTraining: (c, actorName) => {
-      setClassTrainings([...classTrainings, c]);
-      managers.forEach(m => notify(`New training class added: "${c.name}" on ${c.date} — you can enroll your team from the calendar.`, "manager", m.id));
+    addClassTraining: async (c, actorName) => {
+      try {
+        const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false }]);
+        const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, sessions: [], enrollments: [] };
+        setClassTrainings(prev => [...prev, created]);
+        managers.forEach(m => notify(`New training class added: "${created.name}" on ${created.date} — you can enroll your team from the calendar.`, "manager", m.id));
+        return created;
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save class to database: ${err.message}` }));
+        const fallback = { ...c };
+        setClassTrainings(prev => [...prev, fallback]);
+        managers.forEach(m => notify(`New training class added: "${fallback.name}" on ${fallback.date} — you can enroll your team from the calendar.`, "manager", m.id));
+        return fallback;
+      }
     },
-    logSession: (classId, date, hours) => setClassTrainings(classTrainings.map(c =>
-      c.id === classId ? { ...c, sessions: [...c.sessions, { date, hours }] } : c)),
-    toggleClassQuiz: (classId, enabled) => setClassTrainings(classTrainings.map(c =>
-      c.id === classId ? { ...c, quizEnabled: enabled } : c)),
-    enrollInClass: (classId, employeeId, actorName) => {
+    logSession: async (classId, date, hours) => {
+      setClassTrainings(classTrainings.map(c => c.id === classId ? { ...c, sessions: [...c.sessions, { date, hours }] } : c));
+      const cls = classTrainings.find(c => c.id === classId);
+      try { await sbInsert("class_sessions", [{ class_id: classId, session_date: date, hours }]); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save session to database: ${err.message}` })); }
+      logActivity(`Logged ${hours}h for "${cls?.name}" on ${date}.`, "class_session", null, null);
+    },
+    toggleClassQuiz: async (classId, enabled) => {
+      setClassTrainings(classTrainings.map(c => c.id === classId ? { ...c, quizEnabled: enabled } : c));
+      try { await sbUpdate("class_trainings", "id", classId, { quiz_enabled: enabled }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save quiz toggle to database: ${err.message}` })); }
+    },
+    enrollInClass: async (classId, employeeId, actorName) => {
       const cls = classTrainings.find(c => c.id === classId);
       const emp = employees.find(e => e.id === employeeId);
-      setClassTrainings(classTrainings.map(c => c.id === classId
-        ? { ...c, enrollments: [...c.enrollments, { employeeId, quizScore: null, comments: [] }] } : c));
+      try {
+        const [inserted] = await sbInsert("class_enrollments", [{ class_id: classId, employee_id: employeeId, quiz_score: null }]);
+        setClassTrainings(classTrainings.map(c => c.id === classId
+          ? { ...c, enrollments: [...c.enrollments, { employeeId, quizScore: null, comments: [], _enrollmentDbId: inserted.id }] } : c));
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save enrollment to database: ${err.message}` }));
+        setClassTrainings(classTrainings.map(c => c.id === classId
+          ? { ...c, enrollments: [...c.enrollments, { employeeId, quizScore: null, comments: [] }] } : c));
+      }
       notify(`${emp?.name} was enrolled in "${cls?.name}" by ${actorName}.`, "admin");
       notify(`You were enrolled in "${cls?.name}" by ${actorName}.`, "trainee", employeeId);
       if (emp?.managerId && managerName(managers, emp.managerId) !== actorName) {
         notify(`${emp?.name} was enrolled in "${cls?.name}" by ${actorName}.`, "manager", emp.managerId);
       }
+      logActivity(`${emp?.name} enrolled in "${cls?.name}" by ${actorName}.`, "enrollment", null, employeeId);
     },
-    setClassQuizScore: (classId, employeeId, score) => setClassTrainings(classTrainings.map(c =>
-      c.id === classId ? { ...c, enrollments: c.enrollments.map(en => en.employeeId === employeeId ? { ...en, quizScore: score } : en) } : c)),
-    addClassComment: (classId, employeeId, text) => setClassTrainings(classTrainings.map(c =>
-      c.id === classId ? { ...c, enrollments: c.enrollments.map(en => en.employeeId === employeeId
-        ? { ...en, comments: [...en.comments, { text, date: new Date().toISOString().slice(0, 10) }] } : en) } : c)),
-    submitMonthlyFeedback: (fb) => setMonthlyFeedback([...monthlyFeedback, fb]),
-    endorseTopEmployee: (employeeId, managerId) => {
+    setClassQuizScore: async (classId, employeeId, score) => {
+      setClassTrainings(classTrainings.map(c =>
+        c.id === classId ? { ...c, enrollments: c.enrollments.map(en => en.employeeId === employeeId ? { ...en, quizScore: score } : en) } : c));
+      const cls = classTrainings.find(c => c.id === classId);
+      const enrollment = cls?.enrollments.find(en => en.employeeId === employeeId);
+      if (enrollment?._enrollmentDbId) {
+        try { await sbUpdate("class_enrollments", "id", enrollment._enrollmentDbId, { quiz_score: score }); }
+        catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save quiz score to database: ${err.message}` })); }
+      }
+      logActivity(`Scored ${score}% on in-class quiz for "${cls?.name}".`, "quiz_completed", null, employeeId);
+    },
+    addClassComment: async (classId, employeeId, text) => {
+      const cls = classTrainings.find(c => c.id === classId);
+      const enrollment = cls?.enrollments.find(en => en.employeeId === employeeId);
+      const localComment = { text, date: new Date().toISOString().slice(0, 10) };
+      setClassTrainings(classTrainings.map(c =>
+        c.id === classId ? { ...c, enrollments: c.enrollments.map(en => en.employeeId === employeeId
+          ? { ...en, comments: [...en.comments, localComment] } : en) } : c));
+      if (enrollment?._enrollmentDbId) {
+        try { await sbInsert("class_comments", [{ enrollment_id: enrollment._enrollmentDbId, comment: text }]); }
+        catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save comment to database: ${err.message}` })); }
+      }
+    },
+    submitMonthlyFeedback: async (fb) => {
+      try {
+        const [inserted] = await sbInsert("monthly_feedback", [{ manager_id: fb.managerId, employee_id: fb.employeeId, month_key: fb.month, needs_training: fb.needsTraining, comment: fb.comment }]);
+        setMonthlyFeedback(prev => [...prev, fromDbMonthlyFeedback(inserted)]);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save feedback to database: ${err.message}` }));
+        setMonthlyFeedback(prev => [...prev, fb]);
+      }
+      logActivity(`Monthly feedback submitted${fb.needsTraining ? " — flagged as needing training" : ""}.`, "monthly_feedback", fb.managerId, fb.employeeId);
+    },
+    endorseTopEmployee: async (employeeId, managerId) => {
       if (isEndorsedThisMonth(endorsements, employeeId)) return;
-      setEndorsements([...endorsements, { employeeId, managerId, month: currentMonthKey() }]);
+      const entry = { employeeId, managerId, month: currentMonthKey() };
+      setEndorsements([...endorsements, entry]);
       notify(`Congratulations — you're endorsed as Top Employee of the Month!`, "trainee", employeeId);
+      logActivity(`Endorsed as Top Employee of the Month.`, "endorsement", managerId, employeeId);
+      try { await sbInsert("endorsements", [{ employee_id: employeeId, manager_id: managerId, month_key: entry.month }]); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save endorsement to database: ${err.message}` })); }
     },
     bulkImportEmployees: async (rows) => {
       const withPins = rows.map(r => ({ ...r, pin: generatePin() }));
@@ -1745,6 +2079,7 @@ export default function TrainingPlatformPrototype() {
         const newEmployees = inserted.map(row => fromDbEmployee(row, deptMaps.idToName));
         setEmployees([...employees, ...newEmployees]);
         setCredentialsToShare([...newEmployees.map(e => ({ id: e.id, name: e.name, pin: e.pin })), ...credentialsToShare]);
+        logActivity(`Bulk imported ${newEmployees.length} employees via Excel/CSV.`, "bulk_import", null, null);
       } catch (err) {
         const newEmployees = withPins.map((r, i) => ({ id: Date.now() + i, name: r.name, dept: r.dept, role: "trainee", managerId: r.managerId, points: 0, streak: 0, status: "active", pin: r.pin }));
         setEmployees([...employees, ...newEmployees]);
@@ -1752,27 +2087,57 @@ export default function TrainingPlatformPrototype() {
         setDataStatus({ ...dataStatus, error: `Couldn't save import to database: ${err.message}` });
       }
     },
-    addCoachingSession: (session) => setCoachingSessions([...coachingSessions, session]),
-    escalateCoaching: (sessionId, actorName) => {
+    addCoachingSession: async (session) => {
+      try {
+        const [inserted] = await sbInsert("coaching_sessions", [{ employee_id: session.employeeId, manager_id: session.managerId, category: session.category, notes: session.notes, session_date: session.date }]);
+        setCoachingSessions(prev => [...prev, fromDbCoaching(inserted)]);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save coaching session to database: ${err.message}` }));
+        setCoachingSessions(prev => [...prev, session]);
+      }
+      logActivity(`Coaching session logged — ${session.category}.`, "coaching_logged", session.managerId, session.employeeId);
+    },
+    escalateCoaching: async (sessionId, actorName) => {
       const session = coachingSessions.find(s => s.id === sessionId);
       const emp = employees.find(e => e.id === session.employeeId);
       setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, escalated: true } : s));
       notify(`${actorName} escalated ${emp?.name} for intervention — call quality concern.`, "admin");
+      logActivity(`Escalated for intervention — call quality — by ${actorName}.`, "escalation", null, session.employeeId);
+      try { await sbUpdate("coaching_sessions", "id", sessionId, { escalated: true }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save escalation to database: ${err.message}` })); }
     },
     dismissCredential: (id) => setCredentialsToShare(credentialsToShare.filter(c => c.id !== id)),
-    requestTraining: (title, reason, suggestedDate, managerId, managerNameStr) => {
-      setTrainingRequests([{ id: Date.now(), title, reason, suggestedDate, managerId, status: "pending", requestedAt: new Date().toISOString().slice(0, 10) }, ...trainingRequests]);
+    requestTraining: async (title, reason, suggestedDate, managerId, managerNameStr) => {
+      try {
+        const [inserted] = await sbInsert("training_requests", [{ manager_id: managerId, title, reason, suggested_date: suggestedDate }]);
+        setTrainingRequests(prev => [fromDbTrainingRequest(inserted), ...prev]);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save training request to database: ${err.message}` }));
+        setTrainingRequests(prev => [{ id: Date.now(), title, reason, suggestedDate, managerId, status: "pending", requestedAt: new Date().toISOString().slice(0, 10) }, ...prev]);
+      }
       notify(`${managerNameStr} requested a new training: "${title}".`, "admin");
+      logActivity(`Requested new training: "${title}".`, "training_request", managerId, null);
     },
-    respondToTrainingRequest: (requestId, approve) => {
+    respondToTrainingRequest: async (requestId, approve) => {
       const req = trainingRequests.find(r => r.id === requestId);
       setTrainingRequests(trainingRequests.map(r => r.id === requestId ? { ...r, status: approve ? "approved" : "declined" } : r));
+      try { await sbUpdate("training_requests", "id", requestId, { status: approve ? "approved" : "declined" }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save request response to database: ${err.message}` })); }
       if (approve) {
-        actions.addClassTraining({ id: Date.now(), name: req.title, date: req.suggestedDate, sessions: [], quizEnabled: false, enrollments: [] }, "You (Admin)");
+        await actions.addClassTraining({ name: req.title, date: req.suggestedDate }, "You (Admin)");
       }
       notify(`Your training request "${req.title}" was ${approve ? "approved and added to the calendar" : "declined"}.`, "manager", req.managerId);
+      logActivity(`Training request "${req.title}" was ${approve ? "approved" : "declined"}.`, "training_request", null, null);
     },
-    saveReport: (report) => setReports([report, ...reports]),
+    saveReport: async (report) => {
+      try {
+        const [inserted] = await sbInsert("reports", [{ file_name: report.fileName, question: report.question, analysis: report.analysis, storage_path: report.storagePath || null, file_size_bytes: report.fileSize || null }]);
+        setReports(prev => [fromDbReport(inserted), ...prev]);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save report to database: ${err.message}` }));
+        setReports(prev => [{ ...report, date: new Date().toISOString().slice(0, 10) }, ...prev]);
+      }
+    },
     addDepartment: async (name) => {
       if (LIVE_DEPARTMENTS.some(d => d.name.toLowerCase() === name.toLowerCase())) return;
       const color = DEPT_COLOR_POOL[LIVE_DEPARTMENTS.length % DEPT_COLOR_POOL.length];
@@ -1790,6 +2155,7 @@ export default function TrainingPlatformPrototype() {
       setEmployees(employees.map(e => e.id === employeeId ? { ...e, managerId: newManagerId } : e));
       try { await sbUpdate("employees", "id", employeeId, { manager_id: newManagerId }); }
       catch (err) { setDataStatus({ ...dataStatus, error: `Couldn't save manager assignment to database: ${err.message}` }); }
+      logActivity(`Assigned manager: ${managerName(managers, newManagerId)}.`, "manager_assignment", null, employeeId);
     },
   };
 
