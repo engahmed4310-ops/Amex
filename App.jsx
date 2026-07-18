@@ -130,6 +130,39 @@ function generateTempPassword() {
   return pw.split("").sort(() => Math.random() - 0.5).join("");
 }
 
+/* ---------------------------------- SESSION PERSISTENCE (20-min inactivity timeout) ---------------------------------- */
+// NOTE: uses localStorage, which only works once this runs as a real deployed
+// site (Vercel etc.) — the sandboxed live-preview inside chat does not
+// support browser storage, so session persistence can't be demonstrated
+// there. It works correctly once deployed.
+const SESSION_KEY = "amplify_session";
+const SESSION_TIMEOUT_MS = 20 * 60 * 1000;
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (Date.now() - s.lastActivity > SESSION_TIMEOUT_MS) { localStorage.removeItem(SESSION_KEY); return null; }
+    return s;
+  } catch { return null; }
+}
+function saveSession(session) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ ...session, lastActivity: Date.now() })); } catch {}
+}
+function touchSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    s.lastActivity = Date.now();
+    localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+  } catch {}
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch {}
+}
+
 /* ---------------------------------- SUPABASE CONNECTION (plain fetch — no SDK needed) ---------------------------------- */
 const SUPABASE_URL = "https://xnkzlelbhaezkzufonjt.supabase.co";
 const SUPABASE_KEY = "sb_publishable_cZd3LZ3MD_RXBqub6SYWWg_LbyU1Qd7";
@@ -178,6 +211,13 @@ async function sbUploadFile(file, folder = "modules") {
   if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`File upload failed (${res.status}): ${body}`); }
   return { path, url: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${path}`, name: file.name, type: file.type, size: file.size };
 }
+async function sbDeleteFile(path) {
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${path}`, {
+    method: "DELETE",
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+  });
+  if (!res.ok) { const body = await res.text().catch(() => ""); throw new Error(`File delete failed (${res.status}): ${body}`); }
+}
 
 // Convert between the app's simple shape ({name, dept, managerId, ...})
 // and the database's shape ({first_name, last_name, department_id, manager_id, ...})
@@ -217,7 +257,7 @@ function fromDbModule(row) {
   return { id: row.id, title: row.title, desc: row.description || "", points: row.points, mandatory: row.mandatory, hasQuiz: row.has_quiz, attachments: [] };
 }
 function fromDbAttachment(row) {
-  return { id: row.id, name: row.file_name, url: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.storage_path}`, type: row.file_type, size: row.file_size_bytes, moduleId: row.module_id };
+  return { id: row.id, name: row.file_name, url: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.storage_path}`, path: row.storage_path, type: row.file_type, size: row.file_size_bytes, moduleId: row.module_id };
 }
 function fromDbQuizQuestion(row) {
   return { id: row.id, q: row.question, options: row.options, correct: row.correct_index };
@@ -636,17 +676,25 @@ function AdminView({ state, actions }) {
                   {m.attachments?.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
                       {m.attachments.map((f, i) => (
-                        <a key={i} href={f.url} download={f.name} className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
-                          <Paperclip size={11} /> {f.name}
-                        </a>
+                        <span key={i} className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
+                          <a href={f.url} download={f.name} className="flex items-center gap-1"><Paperclip size={11} /> {f.name}</a>
+                          <button onClick={() => { if (window.confirm(`Delete "${f.name}"?`)) actions.deleteAttachment(m.id, f); }} className="tp-red-text ml-1"><X size={11} /></button>
+                        </span>
                       ))}
                     </div>
                   )}
                 </div>
-                <button onClick={() => { setQuizDraft(state.quizzes[m.id]?.length ? state.quizzes[m.id] : [{ q: "", options: ["", "", "", ""], correct: 0 }]); setQbAiContent(""); setQbAiError(""); setShowQuizBuilder(m.id); }}
-                  className="text-sm tp-blue-text font-medium flex items-center gap-1">
-                  {m.hasQuiz ? "Edit quiz" : "Add quiz"} <ChevronRight size={14} />
-                </button>
+                <div className="flex items-center gap-3">
+                  {m.hasQuiz && (
+                    <button onClick={() => { if (window.confirm(`Delete the quiz for "${m.title}"?`)) actions.deleteQuiz(m.id); }} className="text-xs tp-red-text hover:underline">
+                      Delete quiz
+                    </button>
+                  )}
+                  <button onClick={() => { setQuizDraft(state.quizzes[m.id]?.length ? state.quizzes[m.id] : [{ q: "", options: ["", "", "", ""], correct: 0 }]); setQbAiContent(""); setQbAiError(""); setShowQuizBuilder(m.id); }}
+                    className="text-sm tp-blue-text font-medium flex items-center gap-1">
+                    {m.hasQuiz ? "Edit quiz" : "Add quiz"} <ChevronRight size={14} />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -742,7 +790,7 @@ function AdminView({ state, actions }) {
           <div className="tp-card overflow-x-auto tp-scrollbar">
             <table className="w-full text-sm">
               <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
-                <th className="p-3">Employee</th><th className="p-3">Category</th><th className="p-3">Manager</th>
+                <th className="p-3">Employee</th><th className="p-3">Category</th><th className="p-3">Manager</th><th className="p-3"></th>
               </tr></thead>
               <tbody>
                 {state.employees.filter(e => e.role === "trainee").map(e => (
@@ -757,6 +805,31 @@ function AdminView({ state, actions }) {
                           {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                         </select>
                       </div>
+                    </td>
+                    <td className="p-3">
+                      <button onClick={() => { if (window.confirm(`Delete ${e.name}? This removes their account and all their training records.`)) actions.deleteUser(e.id); }}
+                        className="text-xs tp-red-text hover:underline">Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="font-semibold text-sm mb-2 mt-6 flex items-center gap-2"><UserCog size={15} /> Managers</div>
+          <div className="tp-card overflow-x-auto tp-scrollbar">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
+                <th className="p-3">Manager</th><th className="p-3">Category</th><th className="p-3"></th>
+              </tr></thead>
+              <tbody>
+                {managers.map(m => (
+                  <tr key={m.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
+                    <td className="p-3 font-medium">{m.name}</td>
+                    <td className="p-3"><DeptBadge dept={m.dept} /></td>
+                    <td className="p-3">
+                      <button onClick={() => { if (window.confirm(`Delete ${m.name}? Their team will need a new manager assigned.`)) actions.deleteUser(m.id); }}
+                        className="text-xs tp-red-text hover:underline">Delete</button>
                     </td>
                   </tr>
                 ))}
@@ -1704,7 +1777,7 @@ function MonthlyFeedbackView({ state, managerId, actions }) {
 
 
 /* ---------------------------------- LOGIN GATES (name + password, no company data) ---------------------------------- */
-function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp, onPreview }) {
+function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -1726,13 +1799,12 @@ function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp, onPreview }) {
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
         <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Sign up for access →</button>
-        <button onClick={onPreview} className="text-xs tp-slate-text mt-2">Admin: skip login for testing →</button>
       </div>
     </div>
   );
 }
 
-function ManagerLoginGate({ managers, onSuccess, onGoToSignUp, onPreview }) {
+function ManagerLoginGate({ managers, onSuccess, onGoToSignUp }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -1754,9 +1826,44 @@ function ManagerLoginGate({ managers, onSuccess, onGoToSignUp, onPreview }) {
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
         <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Register as a manager →</button>
-        <button onClick={onPreview} className="text-xs tp-slate-text mt-2">Admin: skip login for testing →</button>
       </div>
     </div>
+  );
+}
+
+function ChangePasswordModal({ onClose, onSubmit }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+
+  const submit = async () => {
+    if (!isValidPassword(next)) { setError(`New password doesn't meet the requirements. ${PASSWORD_GUIDELINE}`); return; }
+    if (next !== confirm) { setError("New passwords don't match."); return; }
+    const result = await onSubmit(current, next);
+    if (result.ok) { setError(""); setSuccess(true); }
+    else setError(result.error);
+  };
+
+  return (
+    <Modal title="Change password" onClose={onClose}>
+      {success ? (
+        <div className="text-center py-2 tp-pop">
+          <CheckCircle2 size={28} className="tp-green-text mx-auto mb-2" />
+          <div className="text-sm font-medium">Password updated.</div>
+        </div>
+      ) : (
+        <div className="grid gap-2">
+          <input type="password" className="tp-input" placeholder="Current password" value={current} onChange={e => setCurrent(e.target.value)} />
+          <input type="password" className="tp-input" placeholder="New password" value={next} onChange={e => setNext(e.target.value)} />
+          <input type="password" className="tp-input" placeholder="Confirm new password" value={confirm} onChange={e => setConfirm(e.target.value)} />
+          <div className="text-[11px] tp-slate-text">{PASSWORD_GUIDELINE}</div>
+          {error && <div className="text-xs tp-red-text">{error}</div>}
+          <button onClick={submit} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-1">Update password</button>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -1880,18 +1987,17 @@ export default function AmplifyTrainingApp() {
   const [credentialsToShare, setCredentialsToShare] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [role, setRole] = useState("admin");
-  const [previewUserId, setPreviewUserId] = useState(1);
   const [showSignUp, setShowSignUp] = useState(false);
   const [signUpDefaultRole, setSignUpDefaultRole] = useState("trainee");
   const [loggedInEmployeeId, setLoggedInEmployeeId] = useState(null);
   const [loggedInManagerId, setLoggedInManagerId] = useState(null);
   const [adminAuthenticated, setAdminAuthenticated] = useState(false);
-  const [previewMode, setPreviewMode] = useState(false);
   const [dataStatus, setDataStatus] = useState({ loading: true, error: null, connected: false });
   const [deptMaps, setDeptMaps] = useState({ nameToId: {}, idToName: {} });
   const [trainingRequests, setTrainingRequests] = useState([]);
   const [reports, setReports] = useState([]);
   const [departmentsVersion, setDepartmentsVersion] = useState(0);
+  const [showChangePassword, setShowChangePassword] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1956,6 +2062,32 @@ export default function AmplifyTrainingApp() {
     })();
   }, []);
 
+  // Restore a still-valid session on page load (survives refresh, expires
+  // after 20 minutes of inactivity or on explicit logout).
+  useEffect(() => {
+    const s = loadSession();
+    if (!s) return;
+    if (s.type === "admin") { setRole("admin"); setAdminAuthenticated(true); }
+    else if (s.type === "manager") { setRole("manager"); setLoggedInManagerId(s.id); }
+    else if (s.type === "trainee") { setRole("trainee"); setLoggedInEmployeeId(s.id); }
+  }, []);
+
+  // Keep the session alive while the user is active; log out automatically
+  // after 20 minutes of no activity.
+  useEffect(() => {
+    const isLoggedIn = adminAuthenticated || !!loggedInManagerId || !!loggedInEmployeeId;
+    if (!isLoggedIn) return;
+    const onActivity = () => touchSession();
+    const events = ["mousemove", "keydown", "click", "touchstart", "scroll"];
+    events.forEach(e => window.addEventListener(e, onActivity, { passive: true }));
+    const interval = setInterval(() => {
+      if (!loadSession()) {
+        setAdminAuthenticated(false); setLoggedInManagerId(null); setLoggedInEmployeeId(null);
+      }
+    }, 30000);
+    return () => { events.forEach(e => window.removeEventListener(e, onActivity)); clearInterval(interval); };
+  }, [adminAuthenticated, loggedInManagerId, loggedInEmployeeId]);
+
   const managers = employees.filter(e => e.role === "manager");
   const myNotifications = role === "admin" ? notifications.filter(n => n.audience === "admin" || !n.audience)
     : role === "manager" ? notifications.filter(n => n.audience === "manager" && n.recipientId === loggedInManagerId)
@@ -1975,12 +2107,18 @@ export default function AmplifyTrainingApp() {
     addModule: async (m) => {
       try {
         const [inserted] = await sbInsert("modules", [{ title: m.title, description: m.desc, points: m.points, mandatory: !!m.mandatory, has_quiz: false }]);
-        const created = { ...fromDbModule(inserted), attachments: m.attachments || [] };
-        setModules(prev => [...prev, created]);
-        if (m.attachments?.length) {
-          const rows = m.attachments.map(f => ({ module_id: inserted.id, file_name: f.name, storage_path: f.path, file_type: f.type, file_size_bytes: f.size }));
-          sbInsert("module_attachments", rows).catch(err => setDataStatus(s => ({ ...s, error: `Couldn't save attachment records: ${err.message}` })));
+        let attachments = m.attachments || [];
+        if (attachments.length) {
+          try {
+            const rows = attachments.map(f => ({ module_id: inserted.id, file_name: f.name, storage_path: f.path, file_type: f.type, file_size_bytes: f.size }));
+            const insertedAttachments = await sbInsert("module_attachments", rows);
+            attachments = insertedAttachments.map(fromDbAttachment);
+          } catch (err) {
+            setDataStatus(s => ({ ...s, error: `Couldn't save attachment records: ${err.message}` }));
+          }
         }
+        const created = { ...fromDbModule(inserted), attachments };
+        setModules(prev => [...prev, created]);
         logActivity(`Created module "${created.title}".`, "module_created", null, null);
         return created;
       } catch (err) {
@@ -2241,6 +2379,39 @@ export default function AmplifyTrainingApp() {
       catch (err) { setDataStatus({ ...dataStatus, error: `Couldn't save manager assignment to database: ${err.message}` }); }
       logActivity(`Assigned manager: ${managerName(managers, newManagerId)}.`, "manager_assignment", null, employeeId);
     },
+    changePassword: async (employeeId, currentPassword, newPassword) => {
+      const emp = employees.find(e => e.id === employeeId);
+      if (!emp || emp.password !== currentPassword) return { ok: false, error: "Current password is incorrect." };
+      setEmployees(employees.map(e => e.id === employeeId ? { ...e, password: newPassword } : e));
+      try { await sbUpdate("employees", "id", employeeId, { password: newPassword }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save new password to database: ${err.message}` })); }
+      logActivity(`Password changed.`, "password_change", null, employeeId);
+      return { ok: true };
+    },
+    deleteUser: async (employeeId) => {
+      const emp = employees.find(e => e.id === employeeId);
+      setEmployees(employees.filter(e => e.id !== employeeId));
+      try { await sbDelete("employees", "id", employeeId); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete user from database: ${err.message}` })); }
+      logActivity(`${emp?.name || "A user"} was deleted.`, "user_deleted", null, null);
+    },
+    deleteQuiz: async (moduleId) => {
+      setQuizzes(prev => ({ ...prev, [moduleId]: [] }));
+      setModules(modules.map(m => m.id === moduleId ? { ...m, hasQuiz: false } : m));
+      try {
+        await sbDelete("quiz_questions", "module_id", moduleId);
+        await sbUpdate("modules", "id", moduleId, { has_quiz: false });
+      } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete quiz from database: ${err.message}` })); }
+      logActivity(`Quiz deleted for a module.`, "quiz_deleted", null, null);
+    },
+    deleteAttachment: async (moduleId, attachment) => {
+      setModules(modules.map(m => m.id === moduleId ? { ...m, attachments: m.attachments.filter(a => a !== attachment) } : m));
+      try {
+        if (attachment.id) await sbDelete("module_attachments", "id", attachment.id);
+        if (attachment.path) await sbDeleteFile(attachment.path);
+      } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete file from database: ${err.message}` })); }
+      logActivity(`Deleted material "${attachment.name}".`, "material_deleted", null, null);
+    },
   };
 
   const roleMeta = {
@@ -2269,7 +2440,7 @@ export default function AmplifyTrainingApp() {
           </div>
           <div className="tp-card p-1 flex gap-1 items-center">
             {Object.entries(roleMeta).map(([key, meta]) => (
-              <button key={key} onClick={() => { setRole(key); setShowSignUp(false); setLoggedInEmployeeId(null); setLoggedInManagerId(null); setPreviewMode(false); setAdminAuthenticated(false); }}
+              <button key={key} onClick={() => { setRole(key); setShowSignUp(false); setLoggedInEmployeeId(null); setLoggedInManagerId(null); setAdminAuthenticated(false); clearSession(); }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${role === key ? "tp-tab-active" : "tp-tab hover:bg-gray-50"}`}>
                 <meta.icon size={13} /> {meta.label}
               </button>
@@ -2299,51 +2470,50 @@ export default function AmplifyTrainingApp() {
         </div>
 
         <div className="tp-glass p-3 md:p-5">
-          {role === "trainee" && !loggedInEmployeeId && !showSignUp && !previewMode && (
-            <EmployeeLoginGate employees={employees} onSuccess={setLoggedInEmployeeId} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} onPreview={() => setPreviewMode(true)} />
-          )}
-          {role === "trainee" && previewMode && !loggedInEmployeeId && (
-            <div className="flex items-center gap-2 mb-4">
-              <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Preview mode — pick anyone:</span>
-              <select className="tp-input w-auto text-xs" value={previewUserId} onChange={e => setPreviewUserId(Number(e.target.value))}>
-                {employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-              </select>
-              <button onClick={() => setLoggedInEmployeeId(previewUserId)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">View</button>
-            </div>
+          {role === "trainee" && !loggedInEmployeeId && !showSignUp && (
+            <EmployeeLoginGate employees={employees} onSuccess={(id) => { setLoggedInEmployeeId(id); saveSession({ type: "trainee", id }); }} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} />
           )}
           {role === "trainee" && loggedInEmployeeId && (
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Logged in as {employees.find(e => e.id === loggedInEmployeeId)?.name}</span>
-              <button onClick={() => { setLoggedInEmployeeId(null); setPreviewMode(false); }} className="text-xs tp-gold-text font-medium">Log out</button>
+              <div className="flex items-center gap-3">
+                <button onClick={() => setShowChangePassword(true)} className="text-xs tp-gold-text font-medium">Change password</button>
+                <button onClick={() => { setLoggedInEmployeeId(null); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
+              </div>
             </div>
           )}
 
-          {role === "manager" && !loggedInManagerId && !showSignUp && !previewMode && (
-            <ManagerLoginGate managers={managers} onSuccess={setLoggedInManagerId} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} onPreview={() => setPreviewMode(true)} />
-          )}
-          {role === "manager" && previewMode && !loggedInManagerId && (
-            <div className="flex items-center gap-2 mb-4">
-              <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Preview mode — pick anyone:</span>
-              <select className="tp-input w-auto text-xs" value={previewUserId} onChange={e => setPreviewUserId(Number(e.target.value))}>
-                {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-              </select>
-              <button onClick={() => setLoggedInManagerId(previewUserId)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">View</button>
-            </div>
+          {role === "manager" && !loggedInManagerId && !showSignUp && (
+            <ManagerLoginGate managers={managers} onSuccess={(id) => { setLoggedInManagerId(id); saveSession({ type: "manager", id }); }} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} />
           )}
           {role === "manager" && loggedInManagerId && (
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Logged in as {managers.find(m => m.id === loggedInManagerId)?.name}</span>
-              <button onClick={() => { setLoggedInManagerId(null); setPreviewMode(false); }} className="text-xs tp-gold-text font-medium">Log out</button>
+              <div className="flex items-center gap-3">
+                <button onClick={() => setShowChangePassword(true)} className="text-xs tp-gold-text font-medium">Change password</button>
+                <button onClick={() => { setLoggedInManagerId(null); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
+              </div>
             </div>
           )}
 
-          {role === "admin" && !adminAuthenticated && <AdminLoginGate onSuccess={() => setAdminAuthenticated(true)} />}
+          {role === "admin" && !adminAuthenticated && <AdminLoginGate onSuccess={() => { setAdminAuthenticated(true); saveSession({ type: "admin", id: null }); }} />}
+          {role === "admin" && adminAuthenticated && (
+            <div className="flex items-center justify-end mb-3">
+              <button onClick={() => { setAdminAuthenticated(false); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
+            </div>
+          )}
           {role === "admin" && adminAuthenticated && <AdminView state={state} actions={actions} />}
           {role === "manager" && loggedInManagerId && <ManagerView state={state} managerId={loggedInManagerId} actions={actions} />}
           {(role === "trainee" || role === "manager") && showSignUp && (
             <SignUpView onSubmit={async (...args) => { await actions.signUp(...args); }} managers={managers} defaultRole={signUpDefaultRole} />
           )}
           {role === "trainee" && loggedInEmployeeId && <TraineeView state={state} employeeId={loggedInEmployeeId} actions={actions} />}
+          {showChangePassword && (
+            <ChangePasswordModal
+              onClose={() => setShowChangePassword(false)}
+              onSubmit={(current, next) => actions.changePassword(role === "trainee" ? loggedInEmployeeId : loggedInManagerId, current, next)}
+            />
+          )}
         </div>
       </div>
     </div>
