@@ -366,9 +366,6 @@ function AdminView({ state, actions }) {
   const [qbAiGenerating, setQbAiGenerating] = useState(false);
   const [qbAiError, setQbAiError] = useState("");
   const [deptFilter, setDeptFilter] = useState("all");
-  const [uploadFileName, setUploadFileName] = useState("");
-  const [uploadFileObj, setUploadFileObj] = useState(null);
-  const [materialText, setMaterialText] = useState("");
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
   const [bulkRows, setBulkRows] = useState([]);
@@ -387,6 +384,8 @@ function AdminView({ state, actions }) {
   const [fileToDelete, setFileToDelete] = useState(null);
   const [deletePasswordInput, setDeletePasswordInput] = useState("");
   const [deleteError, setDeleteError] = useState("");
+  const [viewAsRole, setViewAsRole] = useState("manager");
+  const [viewAsId, setViewAsId] = useState("");
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachError, setAttachError] = useState("");
 
@@ -499,38 +498,34 @@ function AdminView({ state, actions }) {
     }
   };
 
-  const generateQuizFromUpload = async () => {
-    if (!materialText.trim()) return;
+  const handleQuickUpload = async (file) => {
     setGenerating(true); setGenError("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: `You are creating a multiple-choice quiz for an employee training module at a financial services company in Saudi Arabia. Based on the training content below, write exactly 5 quiz questions, each with 4 answer options and exactly one correct answer. Respond ONLY with valid JSON and nothing else — no markdown fences, no preamble — in this exact shape: [{"q": "question text", "options": ["a","b","c","d"], "correct": 0}]. Training content:\n\n${materialText}`
-          }]
-        })
-      });
-      const data = await res.json();
-      const textOut = (data.content || []).map(c => c.text || "").join("");
-      const clean = textOut.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
-      const modTitle = uploadFileName.replace(/\.(pptx|ppt)$/i, "") || "Uploaded Training Module";
-      let attachments = [];
-      if (uploadFileObj) {
-        try { attachments = [await sbUploadFile(uploadFileObj, "modules")]; }
-        catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't upload the original file: ${err.message}` })); }
+      const uploaded = await sbUploadFile(file, "modules");
+      const title = file.name.replace(/\.[^.]+$/, "");
+      let extractedText = "";
+      const ext = file.name.split(".").pop().toLowerCase();
+      if (["xlsx", "xls", "csv"].includes(ext)) {
+        extractedText = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+            try {
+              const wb = XLSX.read(evt.target.result, { type: "array" });
+              const sheet = wb.Sheets[wb.SheetNames[0]];
+              resolve(XLSX.utils.sheet_to_csv(sheet).slice(0, 2000));
+            } catch { resolve(""); }
+          };
+          reader.onerror = () => resolve("");
+          reader.readAsArrayBuffer(file);
+        });
       }
-      const created = await actions.addModule({ title: modTitle, desc: materialText.slice(0, 140), points: 50, mandatory: false, attachments });
-      setQuizDraft(parsed);
+      const created = await actions.addModule({ title, desc: extractedText.slice(0, 300), points: 50, mandatory: false, attachments: [uploaded] });
+      setQuizDraft([{ q: "", options: ["", "", "", ""], correct: 0 }]);
+      setQbAiContent(extractedText);
+      setQbAiError("");
       setShowQuizBuilder(created.id);
-      setMaterialText(""); setUploadFileName(""); setUploadFileObj(null);
     } catch (err) {
-      setGenError("Couldn't generate the quiz automatically — check the content and try again, or build the quiz manually below.");
+      setGenError(`Couldn't upload the file: ${err.message}`);
     } finally {
       setGenerating(false);
     }
@@ -582,6 +577,7 @@ function AdminView({ state, actions }) {
         { key: "reports", label: "Reports & Analysis", icon: FileText },
         { key: "celebrations", label: "Celebrations", icon: Trophy },
         { key: "files", label: "Files", icon: Paperclip },
+        { key: "viewas", label: "View As", icon: UserCog },
         { key: "activity", label: "Activity Log", icon: Clock },
       ]} />
 
@@ -663,17 +659,11 @@ function AdminView({ state, actions }) {
       {tab === "content" && (
         <div>
           <div className="tp-card p-4 mb-4">
-            <div className="font-semibold mb-1 flex items-center gap-2"><Sparkles size={16} className="tp-gold-text" /> Upload training material</div>
-            <p className="text-xs tp-slate-text mb-3">Upload a PowerPoint or PDF file — it's saved and attached to the module immediately. Paste its key content below so AI can generate a quiz from it.</p>
-            <input type="file" accept=".ppt,.pptx,.pdf" onChange={e => { setUploadFileName(e.target.files[0]?.name || ""); setUploadFileObj(e.target.files[0] || null); }}
+            <div className="font-semibold mb-1 flex items-center gap-2"><Sparkles size={16} className="tp-gold-text" /> Quick upload — any file type</div>
+            <p className="text-xs tp-slate-text mb-3">Select a file — PowerPoint, PDF, Excel, image, or doc — and it uploads immediately as a new module, no conversion, nothing else required. The quiz builder opens right after so you can generate one with AI or write it yourself.</p>
+            <input type="file" disabled={generating} onChange={e => e.target.files[0] && handleQuickUpload(e.target.files[0])}
               className="text-xs mb-2 block" />
-            {uploadFileName && <div className="text-xs tp-blue-text mb-2">Selected: {uploadFileName} → will be converted to PDF on upload</div>}
-            <textarea className="tp-input" rows={4} placeholder="Paste the slide content / key talking points here so the AI can write quiz questions from it"
-              value={materialText} onChange={e => setMaterialText(e.target.value)} />
-            <button onClick={generateQuizFromUpload} disabled={generating || !materialText.trim()}
-              className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold mt-3 flex items-center gap-2 disabled:opacity-40">
-              <Sparkles size={15} /> {generating ? "Generating quiz…" : "Generate quiz with AI"}
-            </button>
+            {generating && <div className="text-xs tp-blue-text">Uploading…</div>}
             {genError && <div className="text-xs tp-red-text mt-2">{genError}</div>}
           </div>
 
@@ -1007,6 +997,28 @@ function AdminView({ state, actions }) {
             }} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-1" style={{ background: "var(--red)" }}>Delete permanently</button>
           </div>
         </Modal>
+      )}
+
+      {tab === "viewas" && (
+        <div>
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold text-sm mb-2 flex items-center gap-2"><UserCog size={15} className="tp-blue-text" /> View exactly what a manager or trainee sees</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select className="tp-input w-auto text-sm" value={viewAsRole} onChange={e => { setViewAsRole(e.target.value); setViewAsId(""); }}>
+                <option value="manager">Manager</option>
+                <option value="trainee">Trainee</option>
+              </select>
+              <select className="tp-input w-auto text-sm" value={viewAsId} onChange={e => setViewAsId(e.target.value)}>
+                <option value="">Select a person…</option>
+                {(viewAsRole === "manager" ? managers : state.employees.filter(e => e.role === "trainee")).map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {viewAsId && viewAsRole === "manager" && <ManagerView state={state} managerId={viewAsId} actions={actions} />}
+          {viewAsId && viewAsRole === "trainee" && <TraineeView state={state} employeeId={viewAsId} actions={actions} />}
+        </div>
       )}
 
       {tab === "activity" && (
@@ -2255,7 +2267,35 @@ function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
 }
 
 /* ---------------------------------- ROOT APP ---------------------------------- */
-export default function AmplifyTrainingApp() {
+class AppErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("Amplify crashed:", error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight: "100vh", background: "#0B2545", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "sans-serif", padding: 24 }}>
+          <div style={{ background: "white", borderRadius: 16, padding: 32, maxWidth: 480, textAlign: "center" }}>
+            <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
+            <div style={{ fontWeight: 700, fontSize: 18, color: "#0B2545", marginBottom: 8 }}>Something went wrong</div>
+            <div style={{ fontSize: 13, color: "#5B6B8C", marginBottom: 16 }}>
+              The app hit an unexpected error instead of showing a blank screen. Reloading usually fixes it — if it keeps happening, share this message with the admin team:
+            </div>
+            <div style={{ fontSize: 11, color: "#D6534A", background: "#D6534A10", borderRadius: 8, padding: 10, marginBottom: 16, textAlign: "left", wordBreak: "break-word" }}>
+              {String(this.state.error?.message || this.state.error)}
+            </div>
+            <button onClick={() => window.location.reload()} style={{ background: "#0B2545", color: "white", border: "none", borderRadius: 8, padding: "10px 20px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              Reload the app
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AmplifyTrainingAppInner() {
   const [employees, setEmployees] = useState([
     ...initialEmployees,
     ...initialManagers.map(m => ({ id: m.id, name: m.name, dept: m.dept, role: "manager", managerId: null, points: 0, streak: 0, status: "active", password: m.password })),
@@ -2918,5 +2958,13 @@ export default function AmplifyTrainingApp() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function AmplifyTrainingApp() {
+  return (
+    <AppErrorBoundary>
+      <AmplifyTrainingAppInner />
+    </AppErrorBoundary>
   );
 }
