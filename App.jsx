@@ -18,8 +18,8 @@ const Theme = () => (
         radial-gradient(1100px 600px at 8% -10%, rgba(0,113,206,0.35), transparent 60%),
         radial-gradient(900px 500px at 105% 0%, rgba(201,162,75,0.22), transparent 55%),
         linear-gradient(160deg, #071A33 0%, #0B2545 42%, #0E2E5C 100%);
-      background-attachment: fixed;
       min-height: 100vh;
+      min-height: 100dvh;
     }
     .tp-root, .tp-root * { --navy:#0B2545; --blue:#0071CE; --ice:#F5F8FC; --slate:#5B6B8C; --gold:#C9A24B;
       --green:#1F9D64; --red:#D6534A; --line:#E3E9F3; }
@@ -44,7 +44,7 @@ const Theme = () => (
     .tp-tab { color: var(--slate); }
     .tp-progress-track { background: #E9EEF7; border-radius: 999px; overflow:hidden; }
     .tp-progress-fill { background: linear-gradient(90deg, var(--blue), var(--navy)); }
-    .tp-input { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 14px; width: 100%; }
+    .tp-input { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 16px; width: 100%; }
     .tp-input:focus { outline: 2px solid var(--blue); border-color: transparent; }
     .tp-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
     .tp-scrollbar::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
