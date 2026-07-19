@@ -941,7 +941,7 @@ function AdminView({ state, actions }) {
           <div className="tp-card p-4 mb-4">
             <div className="font-semibold mb-2 flex items-center gap-2"><Trophy size={16} className="tp-gold-text" /> Post a celebration</div>
             <div className="grid gap-2">
-              <input className="tp-input" placeholder="Title (e.g. \"Sara — Top Performer, Mass, July\")" value={celebTitle} onChange={e => setCelebTitle(e.target.value)} />
+              <input className="tp-input" placeholder="Title (e.g. 'Sara — Top Performer, Mass, July')" value={celebTitle} onChange={e => setCelebTitle(e.target.value)} />
               <textarea className="tp-input" rows={2} placeholder="Description" value={celebDesc} onChange={e => setCelebDesc(e.target.value)} />
               <select className="tp-input w-auto" value={celebCategory} onChange={e => setCelebCategory(e.target.value)}>
                 <option value="achievement">Achievement</option>
