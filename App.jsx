@@ -386,6 +386,31 @@ function AdminView({ state, actions }) {
   const [deleteError, setDeleteError] = useState("");
   const [viewAsRole, setViewAsRole] = useState("manager");
   const [userSearch, setUserSearch] = useState("");
+  const [qaModuleId, setQaModuleId] = useState("");
+  const [qaResults, setQaResults] = useState([]);
+  const [qaLoading, setQaLoading] = useState(false);
+  const [qaError, setQaError] = useState("");
+
+  const loadQuestionAnalysis = async (moduleId) => {
+    if (!moduleId) { setQaResults([]); return; }
+    setQaLoading(true); setQaError(""); setQaResults([]);
+    try {
+      const rows = await sbSelect("quiz_responses", `module_id=eq.${moduleId}&select=*`);
+      const byQuestion = {};
+      rows.forEach(r => {
+        if (!byQuestion[r.question_text]) byQuestion[r.question_text] = { question: r.question_text, wrongCount: 0, totalCount: 0 };
+        byQuestion[r.question_text].totalCount += 1;
+        if (!r.is_correct) byQuestion[r.question_text].wrongCount += 1;
+      });
+      const results = Object.values(byQuestion).map(q => ({ ...q, missRate: Math.round((q.wrongCount / q.totalCount) * 100) }))
+        .sort((a, b) => b.missRate - a.missRate);
+      setQaResults(results);
+    } catch (err) {
+      setQaError(`Couldn't load question analysis: ${err.message}`);
+    } finally {
+      setQaLoading(false);
+    }
+  };
   const [viewAsId, setViewAsId] = useState("");
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachError, setAttachError] = useState("");
@@ -854,6 +879,34 @@ function AdminView({ state, actions }) {
 
       {tab === "analytics" && (
         <div>
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold mb-2 flex items-center gap-2"><Target size={16} className="tp-red-text" /> Quiz question analysis — which questions trip people up</div>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <select className="tp-input w-auto text-sm" value={qaModuleId} onChange={e => { setQaModuleId(e.target.value); loadQuestionAnalysis(e.target.value); }}>
+                <option value="">Select a module…</option>
+                {state.modules.filter(m => m.hasQuiz).map(m => <option key={m.id} value={m.id}>{m.title}</option>)}
+              </select>
+              {qaLoading && <span className="text-xs tp-slate-text">Loading…</span>}
+            </div>
+            {qaError && <div className="text-xs tp-red-text mb-2">{qaError}</div>}
+            {qaResults.length > 0 && (
+              <div className="grid gap-2">
+                {qaResults.map((r, i) => (
+                  <div key={i} className="p-3 rounded-lg" style={{ background: r.missRate >= 50 ? "#D6534A10" : "#F5F8FC" }}>
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-medium">{r.question}</div>
+                      <span className={`text-xs font-semibold ${r.missRate >= 50 ? "tp-red-text" : "tp-slate-text"}`}>{r.missRate}% missed</span>
+                    </div>
+                    <div className="text-xs tp-slate-text mt-1">{r.wrongCount} of {r.totalCount} attempts got this wrong</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {qaModuleId && !qaLoading && qaResults.length === 0 && !qaError && (
+              <div className="text-xs tp-slate-text">No quiz attempts recorded for this module yet.</div>
+            )}
+          </div>
+
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <button onClick={exportCSV} className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-2">
               <FileSpreadsheet size={16} /> Export to Excel (CSV)
@@ -1274,6 +1327,49 @@ function CelebrationsBanner({ celebrations }) {
   );
 }
 
+function TraineeClassView({ state, employeeId }) {
+  const [classTab, setClassTab] = useState(null);
+  const myEnrollments = state.classTrainings.filter(c => c.enrollments.some(en => en.employeeId === employeeId));
+  const activeClass = state.classTrainings.find(c => c.id === classTab);
+  const myEnrollment = activeClass?.enrollments.find(en => en.employeeId === employeeId);
+
+  return (
+    <div>
+      <TrainingCalendar classTrainings={state.classTrainings} onSelectClass={setClassTab} canAdd={false} onAddDay={() => {}} />
+
+      <div className="font-semibold text-sm mb-2 mt-2">My in-class trainings</div>
+      {myEnrollments.length === 0 && <div className="text-sm tp-slate-text">You're not enrolled in any in-class training yet.</div>}
+      <div className="grid gap-2 mb-4">
+        {myEnrollments.map(c => (
+          <button key={c.id} onClick={() => setClassTab(c.id)} className="tp-card p-3 text-left hover:bg-gray-50">
+            <div className="font-medium text-sm">{c.name}</div>
+            <div className="text-xs tp-slate-text">{c.date}</div>
+          </button>
+        ))}
+      </div>
+
+      {activeClass && (
+        <div className="tp-card p-4">
+          <div className="font-semibold tp-display text-lg mb-1">{activeClass.name}</div>
+          <div className="text-xs tp-slate-text mb-3">Class date: {activeClass.date}</div>
+          <div className="text-xs font-medium tp-slate-text mb-1">Hours logged</div>
+          <div className="flex flex-wrap gap-2 mb-3">
+            {activeClass.sessions.length === 0 && <span className="text-xs tp-slate-text">No sessions logged yet.</span>}
+            {activeClass.sessions.map((s, i) => <span key={i} className="text-xs px-2 py-1 rounded-full tp-ice-bg">{s.date} · {s.hours}h</span>)}
+          </div>
+          {myEnrollment ? (
+            activeClass.quizEnabled && (
+              <div className="text-sm">Your quiz score: <span className="font-semibold">{myEnrollment.quizScore != null ? `${myEnrollment.quizScore}%` : "Not scored yet"}</span></div>
+            )
+          ) : (
+            <div className="text-xs tp-slate-text">You're not enrolled in this class — ask your manager to enroll you if you need to attend.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TrainingLibrary({ modules }) {
   const sorted = [...modules].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   return (
@@ -1358,7 +1454,8 @@ function TraineeView({ state, employeeId, actions }) {
     const correct = currentQuiz.filter((q, i) => answers[i] === q.correct).length;
     const score = Math.round((correct / currentQuiz.length) * 100);
     setResult(score);
-    actions.submitQuiz(employeeId, activeQuiz, score);
+    const questionResults = currentQuiz.map((q, i) => ({ q: q.q, options: q.options, correct: q.correct, selected: answers[i] ?? null }));
+    actions.submitQuiz(employeeId, activeQuiz, score, questionResults);
   };
 
   return (
@@ -1366,6 +1463,7 @@ function TraineeView({ state, employeeId, actions }) {
       <Tabs active={tab} onChange={setTab} tabs={[
         { key: "training", label: "My Training", icon: BookOpen },
         { key: "library", label: "Training Library", icon: FileText },
+        { key: "classes", label: "In-Class Training", icon: GraduationCap },
         { key: "achievements", label: "Achievements", icon: Trophy },
       ]} />
 
@@ -1419,6 +1517,8 @@ function TraineeView({ state, employeeId, actions }) {
       )}
 
       {tab === "library" && <TrainingLibrary modules={state.modules} />}
+
+      {tab === "classes" && <TraineeClassView state={state} employeeId={employeeId} />}
 
       {tab === "achievements" && (
         <div>
@@ -2447,11 +2547,13 @@ function AmplifyTrainingAppInner() {
 
   const notify = (text, audience = "admin", recipientId = null) => {
     setNotifications(prev => [{ id: Date.now() + Math.random(), text, audience, recipientId, date: new Date().toISOString().slice(0, 10) }, ...prev]);
-    sbInsert("notifications", [{ recipient_id: recipientId, message: text, audience }]).catch(() => {});
+    sbInsert("notifications", [{ recipient_id: recipientId, message: text, audience }])
+      .catch(err => setDataStatus(s => ({ ...s, error: `A notification didn't save to the database: ${err.message}` })));
   };
 
   const logActivity = (description, actionType, actorId = null, employeeId = null) => {
-    sbInsert("activity_log", [{ actor_id: actorId, employee_id: employeeId, action_type: actionType, description }]).catch(() => {});
+    sbInsert("activity_log", [{ actor_id: actorId, employee_id: employeeId, action_type: actionType, description }])
+      .catch(err => setDataStatus(s => ({ ...s, error: `An activity log entry didn't save — the task log may be incomplete: ${err.message}` })));
   };
 
   const actions = {
@@ -2481,7 +2583,7 @@ function AmplifyTrainingAppInner() {
     },
     saveQuiz: async (moduleId, questions) => {
       try {
-        await sbDelete("quiz_questions", "module_id", moduleId).catch(() => {}); // clear any existing (edit case)
+        await sbDelete("quiz_questions", "module_id", moduleId); // clear any existing (edit case)
         const rows = questions.map((q, i) => ({ module_id: moduleId, question: q.q, options: q.options, correct_index: q.correct, sort_order: i }));
         const inserted = await sbInsert("quiz_questions", rows);
         await sbUpdate("modules", "id", moduleId, { has_quiz: true });
@@ -2517,9 +2619,12 @@ function AmplifyTrainingAppInner() {
       setPending(pending.filter(x => x.id !== id));
     },
     reject: async (id) => {
-      setPending(pending.filter(x => x.id !== id));
-      try { await sbDelete("pending_signups", "id", id); }
-      catch (err) { setDataStatus({ ...dataStatus, error: `Couldn't remove request from database: ${err.message}` }); }
+      try {
+        await sbDelete("pending_signups", "id", id);
+        setPending(pending.filter(x => x.id !== id));
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't remove request from database: ${err.message}` }));
+      }
     },
     assign: async (employeeId, moduleId, actorName, passThreshold = 80) => {
       if (assignments.some(a => a.employeeId === employeeId && a.moduleId === moduleId)) return;
@@ -2534,7 +2639,7 @@ function AmplifyTrainingAppInner() {
       notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}. You need ${passThreshold}%+ on the quiz to complete it.`, "trainee", employeeId);
       logActivity(`Assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""} — pass threshold ${passThreshold}%.`, "assignment", null, employeeId);
     },
-    submitQuiz: async (employeeId, moduleId, score) => {
+    submitQuiz: async (employeeId, moduleId, score, questionResults = []) => {
       const existing = assignments.find(a => a.employeeId === employeeId && a.moduleId === moduleId);
       const mod = modules.find(m => m.id === moduleId);
       const emp = employees.find(e => e.id === employeeId);
@@ -2542,21 +2647,32 @@ function AmplifyTrainingAppInner() {
       const attempts = (existing?.attempts || 0) + 1;
       const passed = score >= threshold;
 
+      if (questionResults.length > 0) {
+        const rows = questionResults.map(q => ({
+          employee_id: employeeId, module_id: moduleId, question_text: q.q, options: q.options,
+          selected_index: q.selected, correct_index: q.correct, is_correct: q.selected === q.correct, attempt_number: attempts,
+        }));
+        sbInsert("quiz_responses", rows).catch(err => setDataStatus(s => ({ ...s, error: `Quiz answers didn't save for question analysis: ${err.message}` })));
+      }
+
       if (passed) {
         setAssignments(assignments.map(a => a.employeeId === employeeId && a.moduleId === moduleId
           ? { ...a, quizScore: score, progress: 100, status: "completed", attempts } : a));
         if (mod && emp) {
           setEmployees(employees.map(e => e.id === employeeId ? { ...e, points: e.points + mod.points, streak: e.streak + 1 } : e));
-          sbUpdate("employees", "id", employeeId, { points: emp.points + mod.points, streak: emp.streak + 1 }).catch(() => {});
+          sbUpdate("employees", "id", employeeId, { points: emp.points + mod.points, streak: emp.streak + 1 })
+            .catch(err => setDataStatus(s => ({ ...s, error: `Points didn't save to the database: ${err.message}` })));
         }
-        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed", attempts }).catch(() => {});
+        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed", attempts })
+          .catch(err => setDataStatus(s => ({ ...s, error: `Quiz completion didn't save to the database — refresh may lose this: ${err.message}` })));
         notify(`You passed the quiz for "${mod?.title}" — ${score}%! Module complete.`, "trainee", employeeId);
         logActivity(`${emp?.name || "Employee"} passed quiz for "${mod?.title}" — scored ${score}% (needed ${threshold}%), attempt ${attempts}.`, "quiz_completed", null, employeeId);
       } else {
         // Failed — restart the module (progress resets), but keep the attempt count.
         setAssignments(assignments.map(a => a.employeeId === employeeId && a.moduleId === moduleId
           ? { ...a, quizScore: score, progress: 0, status: "in_progress", attempts } : a));
-        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 0, status: "in_progress", attempts }).catch(() => {});
+        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 0, status: "in_progress", attempts })
+          .catch(err => setDataStatus(s => ({ ...s, error: `Quiz result didn't save to the database — refresh may lose this: ${err.message}` })));
         logActivity(`${emp?.name || "Employee"} failed quiz for "${mod?.title}" — scored ${score}% (needed ${threshold}%), attempt ${attempts} of 3.`, "quiz_failed", null, employeeId);
 
         if (attempts >= 3) {
