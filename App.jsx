@@ -394,6 +394,7 @@ function AdminView({ state, actions }) {
   const [qaResults, setQaResults] = useState([]);
   const [qaLoading, setQaLoading] = useState(false);
   const [qaError, setQaError] = useState("");
+  const [addFileModuleId, setAddFileModuleId] = useState(null);
 
   const loadQuestionAnalysis = async (moduleId) => {
     if (!moduleId) { setQaResults([]); return; }
@@ -746,6 +747,17 @@ function AdminView({ state, actions }) {
                       ))}
                     </div>
                   )}
+                  <label className="text-xs tp-blue-text font-medium mt-2 flex items-center gap-1 cursor-pointer w-fit">
+                    <Upload size={11} /> {addFileModuleId === m.id ? "Uploading…" : "Add file"}
+                    <input type="file" className="hidden" disabled={addFileModuleId === m.id} onChange={async e => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      setAddFileModuleId(m.id);
+                      await actions.addAttachmentToModule(m.id, file);
+                      setAddFileModuleId(null);
+                      e.target.value = "";
+                    }} />
+                  </label>
                 </div>
                 <div className="flex items-center gap-3">
                   {m.hasQuiz && (
@@ -3036,6 +3048,19 @@ function AmplifyTrainingAppInner() {
         if (attachment.path) await sbDeleteFile(attachment.path);
       } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete file from database: ${err.message}` })); }
       logActivity(`Deleted material "${attachment.name}".`, "material_deleted", null, null);
+    },
+    addAttachmentToModule: async (moduleId, file) => {
+      try {
+        const uploaded = await sbUploadFile(file, "modules");
+        const [inserted] = await sbInsert("module_attachments", [{ module_id: moduleId, file_name: uploaded.name, storage_path: uploaded.path, file_type: uploaded.type, file_size_bytes: uploaded.size }]);
+        const attachment = fromDbAttachment(inserted);
+        setModules(modules.map(m => m.id === moduleId ? { ...m, attachments: [...(m.attachments || []), attachment] } : m));
+        logActivity(`Added material "${file.name}" to a module.`, "material_added", null, null);
+        return { ok: true };
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't upload file: ${err.message}` }));
+        return { ok: false, error: err.message };
+      }
     },
     addCelebration: async (title, description, category) => {
       try {
