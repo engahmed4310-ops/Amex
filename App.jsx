@@ -740,7 +740,7 @@ function AdminView({ state, actions }) {
                     <div className="flex flex-wrap gap-1 mt-2">
                       {m.attachments.map((f, i) => (
                         <span key={i} className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
-                          <a href={f.url} download={f.name} className="flex items-center gap-1"><Paperclip size={11} /> {f.name}</a>
+                          <a href={f.url} target="_blank" rel="noreferrer" className="flex items-center gap-1"><Paperclip size={11} /> {f.name}</a>
                           <button onClick={() => { if (window.confirm(`Delete "${f.name}"?`)) actions.deleteAttachment(m.id, f); }} className="tp-red-text ml-1"><X size={11} /></button>
                         </span>
                       ))}
@@ -1204,9 +1204,16 @@ function ManagerView({ state, managerId, actions }) {
   const myName = state.employees.find(e => e.id === managerId)?.name;
   const [tab, setTab] = useState("team");
   const team = state.employees.filter(e => e.managerId === managerId);
-  const [assignEmp, setAssignEmp] = useState(team[0]?.id || null);
-  const [assignMod, setAssignMod] = useState(state.modules[0]?.id || null);
+  const [assignEmp, setAssignEmp] = useState("");
+  const [assignMod, setAssignMod] = useState("");
   const [assignPassThreshold, setAssignPassThreshold] = useState(80);
+
+  useEffect(() => {
+    if (!assignEmp && team.length > 0) setAssignEmp(team[0].id);
+  }, [team.length, assignEmp]);
+  useEffect(() => {
+    if (!assignMod && state.modules.length > 0) setAssignMod(state.modules[0].id);
+  }, [state.modules.length, assignMod]);
 
   useEffect(() => {
     if (new Date().getDate() > 21 && team.length > 0) {
@@ -1272,20 +1279,29 @@ function ManagerView({ state, managerId, actions }) {
 
       {tab === "assign" && (
         <div className="tp-card p-4 grid gap-3 max-w-md">
-          <label className="text-xs tp-slate-text">Employee</label>
-          <select className="tp-input" value={assignEmp} onChange={e => setAssignEmp(e.target.value)}>
-            {team.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-          <label className="text-xs tp-slate-text">Training module</label>
-          <select className="tp-input" value={assignMod} onChange={e => setAssignMod(e.target.value)}>
-            {[...state.modules].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).map(m => <option key={m.id} value={m.id}>{m.title}{m.hasQuiz ? " (has quiz)" : ""}</option>)}
-          </select>
-          <label className="text-xs tp-slate-text">Passing score required {state.modules.find(m => m.id === assignMod)?.hasQuiz ? "" : "(no quiz on this module yet)"}</label>
-          <input type="number" min={0} max={100} className="tp-input" value={assignPassThreshold} onChange={e => setAssignPassThreshold(Number(e.target.value))} />
-          <p className="text-xs tp-slate-text -mt-1">They get 3 attempts. Falling short restarts the module; a 3rd miss auto-escalates to the admin team.</p>
-          <button onClick={() => actions.assign(assignEmp, assignMod, myName, assignPassThreshold)} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2 justify-center">
-            <Send size={15} /> Assign module
-          </button>
+          {team.length === 0 ? (
+            <div className="text-sm tp-slate-text">No one is on your team yet — once you have team members, you can assign them training here.</div>
+          ) : state.modules.length === 0 ? (
+            <div className="text-sm tp-slate-text">No training modules exist yet — ask the admin team to upload one first.</div>
+          ) : (
+            <>
+              <label className="text-xs tp-slate-text">Employee</label>
+              <select className="tp-input" value={assignEmp} onChange={e => setAssignEmp(e.target.value)}>
+                {team.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+              <label className="text-xs tp-slate-text">Training module</label>
+              <select className="tp-input" value={assignMod} onChange={e => setAssignMod(e.target.value)}>
+                {[...state.modules].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).map(m => <option key={m.id} value={m.id}>{m.title}{m.hasQuiz ? " (has quiz)" : ""}</option>)}
+              </select>
+              <label className="text-xs tp-slate-text">Passing score required {state.modules.find(m => m.id === assignMod)?.hasQuiz ? "" : "(no quiz on this module yet)"}</label>
+              <input type="number" min={0} max={100} className="tp-input" value={assignPassThreshold} onChange={e => setAssignPassThreshold(Number(e.target.value))} />
+              <p className="text-xs tp-slate-text -mt-1">They get 3 attempts. Falling short restarts the module; a 3rd miss auto-escalates to the admin team.</p>
+              <button onClick={() => actions.assign(assignEmp, assignMod, myName, assignPassThreshold)} disabled={!assignEmp || !assignMod}
+                className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2 justify-center disabled:opacity-40">
+                <Send size={15} /> Assign module
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -1514,7 +1530,7 @@ function TraineeView({ state, employeeId, actions }) {
                 {mod.attachments?.length > 0 && (
                   <div className="flex flex-wrap gap-1 mb-2">
                     {mod.attachments.map((f, i) => (
-                      <a key={i} href={f.url} download={f.name} className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
+                      <a key={i} href={f.url} target="_blank" rel="noreferrer" className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
                         <Paperclip size={11} /> {f.name}
                       </a>
                     ))}
@@ -1720,13 +1736,17 @@ function TrainingCalendar({ classTrainings, onSelectClass, onAddDay, canAdd }) {
 }
 
 function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
-  const [classTab, setClassTab] = useState(state.classTrainings[0]?.id || null);
+  const [classTab, setClassTab] = useState(null);
   const [showNewClass, setShowNewClass] = useState(false);
   const [newClass, setNewClass] = useState({ name: "", date: "" });
   const [enrollId, setEnrollId] = useState("");
   const [sessionDraft, setSessionDraft] = useState({ date: "", hours: "" });
   const [commentDraft, setCommentDraft] = useState({});
   const [requestForm, setRequestForm] = useState({ title: "", reason: "", suggestedDate: "" });
+
+  useEffect(() => {
+    if (!classTab && state.classTrainings.length > 0) setClassTab(state.classTrainings[0].id);
+  }, [state.classTrainings.length, classTab]);
 
   const eligibleEmployees = scope === "manager" ? state.employees.filter(e => e.managerId === managerId) : state.employees;
   const activeClass = state.classTrainings.find(c => c.id === classTab);
@@ -1918,9 +1938,13 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
 
 /* ---------------------------------- COACHING & COMMENTS (manager, direct-manager only) ---------------------------------- */
 function CoachingSection({ state, managerId, team, actions, actorName }) {
-  const [selectedEmp, setSelectedEmp] = useState(team[0]?.id || null);
+  const [selectedEmp, setSelectedEmp] = useState("");
   const [category, setCategory] = useState("Call Quality");
   const [notes, setNotes] = useState("");
+
+  useEffect(() => {
+    if (!selectedEmp && team.length > 0) setSelectedEmp(team[0].id);
+  }, [team.length, selectedEmp]);
 
   const mySessions = state.coachingSessions.filter(s => s.managerId === managerId);
 
@@ -2347,11 +2371,15 @@ function SignUpView({ onSubmit, managers, defaultRole = "trainee" }) {
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [dept, setDept] = useState(LIVE_DEPARTMENTS[0].name);
-  const [managerId, setManagerId] = useState(managers[0]?.id);
+  const [managerId, setManagerId] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [submitted, setSubmitted] = useState(false);
+
+  useEffect(() => {
+    if (!managerId && managers.length > 0) setManagerId(managers[0].id);
+  }, [managers.length, managerId]);
 
   const submit = () => {
     if (!firstName.trim() || !lastName.trim()) { setError("Enter your first and last name."); return; }
