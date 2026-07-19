@@ -1219,6 +1219,8 @@ function ManagerView({ state, managerId, actions }) {
   const [assignEmp, setAssignEmp] = useState("");
   const [assignMod, setAssignMod] = useState("");
   const [assignPassThreshold, setAssignPassThreshold] = useState(80);
+  const [assigning, setAssigning] = useState(false);
+  const [assignFeedback, setAssignFeedback] = useState(null);
 
   useEffect(() => {
     if (!assignEmp && team.length > 0) setAssignEmp(team[0].id);
@@ -1308,10 +1310,21 @@ function ManagerView({ state, managerId, actions }) {
               <label className="text-xs tp-slate-text">Passing score required {state.modules.find(m => m.id === assignMod)?.hasQuiz ? "" : "(no quiz on this module yet)"}</label>
               <input type="number" min={0} max={100} className="tp-input" value={assignPassThreshold} onChange={e => setAssignPassThreshold(Number(e.target.value))} />
               <p className="text-xs tp-slate-text -mt-1">They get 3 attempts. Falling short restarts the module; a 3rd miss auto-escalates to the admin team.</p>
-              <button onClick={() => actions.assign(assignEmp, assignMod, myName, assignPassThreshold)} disabled={!assignEmp || !assignMod}
+              <button onClick={async () => {
+                setAssignFeedback(null); setAssigning(true);
+                const result = await actions.assign(assignEmp, assignMod, myName, assignPassThreshold);
+                setAssignFeedback(result); setAssigning(false);
+              }} disabled={!assignEmp || !assignMod || assigning}
                 className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2 justify-center disabled:opacity-40">
-                <Send size={15} /> Assign module
+                <Send size={15} /> {assigning ? "Assigning…" : "Assign module"}
               </button>
+              {assignFeedback && (
+                assignFeedback.ok ? (
+                  <div className="text-xs tp-green-text font-medium flex items-center gap-1"><CheckCircle2 size={13} /> Assigned "{assignFeedback.moduleTitle}" to {assignFeedback.employeeName}.</div>
+                ) : (
+                  <div className="text-xs tp-red-text font-medium flex items-center gap-1"><AlertTriangle size={13} /> {assignFeedback.error}</div>
+                )
+              )}
             </>
           )}
         </div>
@@ -1726,15 +1739,15 @@ function TrainingCalendar({ classTrainings, onSelectClass, onAddDay, canAdd }) {
           const ds = dateStr(d);
           const classesToday = classTrainings.filter(c => c.date === ds);
           return (
-            <div key={i} className="border rounded-lg p-1 min-h-[64px] text-left" style={{ borderColor: "var(--line)" }}>
+            <div key={i} className="border rounded-lg p-1 min-h-[76px] text-left" style={{ borderColor: "var(--line)" }}>
               <div className="flex items-center justify-between">
                 <span className="text-[10px] tp-slate-text">{d}</span>
-                {canAdd && <button onClick={() => onAddDay(ds)} className="text-[10px] tp-blue-text font-bold">+</button>}
+                {canAdd && <button onClick={() => onAddDay(ds)} className="text-xs tp-blue-text font-bold px-1">+</button>}
               </div>
-              <div className="grid gap-0.5 mt-0.5">
+              <div className="grid gap-1 mt-1">
                 {classesToday.map(c => (
                   <button key={c.id} onClick={() => onSelectClass(c.id)}
-                    className="text-[9px] px-1 py-0.5 rounded tp-gold-bg text-left truncate" style={{ color: "var(--navy)" }} title={c.name}>
+                    className="text-[10px] leading-tight px-1.5 py-1.5 rounded tp-gold-bg text-left break-words active:opacity-70" style={{ color: "var(--navy)", minHeight: "28px" }} title={c.name}>
                     {c.name}
                   </button>
                 ))}
@@ -1831,13 +1844,16 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
       {state.classTrainings.length === 0 && <div className="text-sm tp-slate-text">No in-class trainings yet.</div>}
 
       {state.classTrainings.length > 0 && (
-        <div className="flex gap-1 p-1 tp-card mb-4 overflow-x-auto tp-scrollbar">
-          {state.classTrainings.map(c => (
-            <button key={c.id} onClick={() => setClassTab(c.id)}
-              className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${classTab === c.id ? "tp-tab-active" : "tp-tab hover:bg-gray-50"}`}>
-              {c.name}
-            </button>
-          ))}
+        <div className="mb-4">
+          <div className="text-xs tp-slate-text mb-1">Or tap a class here:</div>
+          <div className="flex gap-1 p-1 tp-card overflow-x-auto tp-scrollbar">
+            {state.classTrainings.map(c => (
+              <button key={c.id} onClick={() => setClassTab(c.id)}
+                className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${classTab === c.id ? "tp-tab-active" : "tp-tab hover:bg-gray-50"}`}>
+                {c.name}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -2714,8 +2730,11 @@ function AmplifyTrainingAppInner() {
       }
     },
     assign: async (employeeId, moduleId, actorName, passThreshold = 80) => {
-      if (assignments.some(a => a.employeeId === employeeId && a.moduleId === moduleId)) return;
+      const emp = employees.find(e => e.id === employeeId);
       const mod = modules.find(m => m.id === moduleId);
+      if (assignments.some(a => a.employeeId === employeeId && a.moduleId === moduleId)) {
+        return { ok: false, error: `${emp?.name || "This employee"} is already assigned "${mod?.title}".` };
+      }
       try {
         const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started", pass_threshold: passThreshold, attempts: 0, active_seconds: 0 }]);
         setAssignments(prev => [...prev, fromDbAssignment(inserted)]);
@@ -2724,7 +2743,9 @@ function AmplifyTrainingAppInner() {
         setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started", passThreshold, attempts: 0, activeSeconds: 0, assignedAt: new Date().toISOString() }]);
       }
       notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}. You need ${passThreshold}%+ on the quiz to complete it.`, "trainee", employeeId);
+      if (emp?.managerId) notify(`You assigned "${mod?.title}" to ${emp?.name}.`, "manager", emp.managerId);
       logActivity(`Assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""} — pass threshold ${passThreshold}%.`, "assignment", null, employeeId);
+      return { ok: true, employeeName: emp?.name, moduleTitle: mod?.title };
     },
     submitQuiz: async (employeeId, moduleId, score, questionResults = []) => {
       const existing = assignments.find(a => a.employeeId === employeeId && a.moduleId === moduleId);
