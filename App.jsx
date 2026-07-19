@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 import {
   LayoutDashboard, BookOpen, ClipboardCheck, BarChart3, Users, Send,
   Trophy, Star, Clock, CheckCircle2, XCircle, PlusCircle, Download,
   Award, Flame, Target, ChevronRight, X, Shield, UserCog, GraduationCap,
   Sparkles, TrendingUp, FileSpreadsheet, Crown, Medal, Zap, Upload, Paperclip, FileText, Image as ImageIcon, File as FileIcon,
-  MessageSquare, AlertTriangle, Headphones
+  MessageSquare, AlertTriangle, Headphones, Smartphone
 } from "lucide-react";
 
 /* ---------------------------------- THEME ---------------------------------- */
@@ -102,6 +102,11 @@ function deptColor(name) {
 }
 function managerName(managers, managerId) {
   return managers.find(m => m.id === managerId)?.name || "Unassigned";
+}
+function formatActiveTime(activeSeconds, fallbackMin) {
+  const totalMin = activeSeconds != null ? Math.round(activeSeconds / 60) : (fallbackMin || 0);
+  if (totalMin < 60) return `${totalMin} min actual time`;
+  return `${Math.floor(totalMin / 60)}h ${totalMin % 60}m actual time`;
 }
 function currentMonthKey() {
   const d = new Date();
@@ -254,7 +259,7 @@ function fromDbPending(row, deptIdToName) {
 
 // --- Modules & quizzes ---
 function fromDbModule(row) {
-  return { id: row.id, title: row.title, desc: row.description || "", points: row.points, mandatory: row.mandatory, hasQuiz: row.has_quiz, attachments: [] };
+  return { id: row.id, title: row.title, desc: row.description || "", points: row.points, mandatory: row.mandatory, hasQuiz: row.has_quiz, attachments: [], createdAt: row.created_at };
 }
 function fromDbAttachment(row) {
   return { id: row.id, name: row.file_name, url: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.storage_path}`, path: row.storage_path, type: row.file_type, size: row.file_size_bytes, moduleId: row.module_id };
@@ -264,7 +269,7 @@ function fromDbQuizQuestion(row) {
 }
 // --- Assignments ---
 function fromDbAssignment(row) {
-  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status };
+  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status, passThreshold: row.pass_threshold ?? 80, attempts: row.attempts || 0, activeSeconds: row.active_seconds || 0, assignedAt: row.assigned_at };
 }
 // --- Class trainings (nested: sessions, enrollments, comments) ---
 function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
@@ -296,6 +301,9 @@ function fromDbTrainingRequest(row) {
 }
 function fromDbReport(row) {
   return { id: row.id, fileName: row.file_name, question: row.question, analysis: row.analysis, date: row.created_at?.slice(0, 10), fileUrl: row.storage_path ? `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.storage_path}` : null };
+}
+function fromDbCelebration(row) {
+  return { id: row.id, title: row.title, description: row.description, category: row.category, date: row.created_at?.slice(0, 10) };
 }
 
 const DeptBadge = ({ dept }) => (
@@ -373,6 +381,12 @@ function AdminView({ state, actions }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState("");
   const [newDeptName, setNewDeptName] = useState("");
+  const [celebTitle, setCelebTitle] = useState("");
+  const [celebDesc, setCelebDesc] = useState("");
+  const [celebCategory, setCelebCategory] = useState("achievement");
+  const [fileToDelete, setFileToDelete] = useState(null);
+  const [deletePasswordInput, setDeletePasswordInput] = useState("");
+  const [deleteError, setDeleteError] = useState("");
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachError, setAttachError] = useState("");
 
@@ -566,6 +580,8 @@ function AdminView({ state, actions }) {
         { key: "approvals", label: "Approvals", icon: ClipboardCheck },
         { key: "analytics", label: "Analytics", icon: BarChart3 },
         { key: "reports", label: "Reports & Analysis", icon: FileText },
+        { key: "celebrations", label: "Celebrations", icon: Trophy },
+        { key: "files", label: "Files", icon: Paperclip },
         { key: "activity", label: "Activity Log", icon: Clock },
       ]} />
 
@@ -920,6 +936,79 @@ function AdminView({ state, actions }) {
         </div>
       )}
 
+      {tab === "celebrations" && (
+        <div>
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold mb-2 flex items-center gap-2"><Trophy size={16} className="tp-gold-text" /> Post a celebration</div>
+            <div className="grid gap-2">
+              <input className="tp-input" placeholder="Title (e.g. \"Sara — Top Performer, Mass, July\")" value={celebTitle} onChange={e => setCelebTitle(e.target.value)} />
+              <textarea className="tp-input" rows={2} placeholder="Description" value={celebDesc} onChange={e => setCelebDesc(e.target.value)} />
+              <select className="tp-input w-auto" value={celebCategory} onChange={e => setCelebCategory(e.target.value)}>
+                <option value="achievement">Achievement</option>
+                <option value="top_performer">Top Performer</option>
+                <option value="event">Event</option>
+                <option value="team_win">Team Win</option>
+              </select>
+              <button onClick={() => { if (celebTitle.trim()) { actions.addCelebration(celebTitle.trim(), celebDesc.trim(), celebCategory); setCelebTitle(""); setCelebDesc(""); } }}
+                className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold w-fit">Post — visible to everyone</button>
+            </div>
+          </div>
+          <div className="grid gap-3">
+            {state.celebrations.length === 0 && <div className="text-sm tp-slate-text">Nothing posted yet.</div>}
+            {state.celebrations.map(c => (
+              <div key={c.id} className="tp-card p-4 flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-semibold flex items-center gap-2"><Crown size={14} className="tp-gold-text" /> {c.title}</div>
+                  {c.description && <div className="text-sm tp-slate-text mt-1">{c.description}</div>}
+                  <div className="text-xs tp-slate-text mt-1">{c.date}</div>
+                </div>
+                <button onClick={() => actions.deleteCelebration(c.id)} className="text-xs tp-red-text hover:underline">Delete</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === "files" && (
+        <div>
+          <div className="font-semibold text-sm mb-3">All uploaded files — training material, reports, analysis files</div>
+          <div className="grid gap-2">
+            {state.modules.flatMap(m => (m.attachments || []).map(f => ({ ...f, source: `Module: ${m.title}`, kind: "attachment", moduleId: m.id }))).map((f, i) => (
+              <div key={`att-${i}`} className="tp-card p-3 flex items-center justify-between">
+                <div className="text-sm flex items-center gap-2"><Paperclip size={14} className="tp-blue-text" /> {f.name} <span className="text-xs tp-slate-text">· {f.source}</span></div>
+                <button onClick={() => setFileToDelete(f)} className="text-xs tp-red-text hover:underline">Delete</button>
+              </div>
+            ))}
+            {state.reports.filter(r => r.fileUrl).map(r => (
+              <div key={`rep-${r.id}`} className="tp-card p-3 flex items-center justify-between">
+                <div className="text-sm flex items-center gap-2"><FileText size={14} className="tp-blue-text" /> {r.fileName} <span className="text-xs tp-slate-text">· Report analysis</span></div>
+                <button onClick={() => setFileToDelete({ ...r, kind: "report" })} className="text-xs tp-red-text hover:underline">Delete</button>
+              </div>
+            ))}
+            {state.modules.every(m => !m.attachments?.length) && state.reports.every(r => !r.fileUrl) && (
+              <div className="text-sm tp-slate-text">No files uploaded yet.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {fileToDelete && (
+        <Modal title="Confirm deletion" onClose={() => { setFileToDelete(null); setDeletePasswordInput(""); setDeleteError(""); }}>
+          <div className="grid gap-2">
+            <div className="text-sm">Delete <span className="font-semibold">{fileToDelete.name || fileToDelete.fileName}</span>? This can't be undone.</div>
+            <label className="text-xs tp-slate-text">Confirm your admin password</label>
+            <input type="password" className="tp-input" value={deletePasswordInput} onChange={e => setDeletePasswordInput(e.target.value)} />
+            {deleteError && <div className="text-xs tp-red-text">{deleteError}</div>}
+            <button onClick={() => {
+              if (deletePasswordInput !== "Amex@1234") { setDeleteError("Incorrect password."); return; }
+              if (fileToDelete.kind === "report") actions.deleteReport(fileToDelete.id);
+              else actions.deleteAttachment(fileToDelete.moduleId, fileToDelete);
+              setFileToDelete(null); setDeletePasswordInput(""); setDeleteError("");
+            }} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-1" style={{ background: "var(--red)" }}>Delete permanently</button>
+          </div>
+        </Modal>
+      )}
+
       {tab === "activity" && (
         <ActivityLogSection state={state} scope="admin" />
       )}
@@ -1009,12 +1098,23 @@ function ManagerView({ state, managerId, actions }) {
   const team = state.employees.filter(e => e.managerId === managerId);
   const [assignEmp, setAssignEmp] = useState(team[0]?.id || null);
   const [assignMod, setAssignMod] = useState(state.modules[0]?.id || null);
+  const [assignPassThreshold, setAssignPassThreshold] = useState(80);
+
+  useEffect(() => {
+    if (new Date().getDate() > 21 && team.length > 0) {
+      const monthKey = currentMonthKey();
+      const missing = team.filter(e => !state.monthlyFeedback.some(f => f.managerId === managerId && f.employeeId === e.id && f.month === monthKey));
+      if (missing.length > 0) actions.checkFeedbackOverdue(managerId, missing.map(e => e.name));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [managerId]);
 
   return (
     <div>
       <Tabs active={tab} onChange={setTab} tabs={[
         { key: "team", label: "My Team", icon: Users },
         { key: "assign", label: "Assign Training", icon: Send },
+        { key: "library", label: "Training Library", icon: FileText },
         { key: "progress", label: "Progress", icon: TrendingUp },
         { key: "classes", label: "In-Class Training", icon: GraduationCap },
         { key: "coaching", label: "Coaching & Comments", icon: Headphones },
@@ -1023,7 +1123,9 @@ function ManagerView({ state, managerId, actions }) {
       ]} />
 
       {tab === "team" && (
-        <div className="grid gap-3">
+        <div>
+          <CelebrationsBanner celebrations={state.celebrations} />
+          <div className="grid gap-3">
           {team.map(e => {
             const badge = badgeForPoints(e.points);
             const isDeptTop = topEmployeeOfDept(state.employees, e.dept)?.id === e.id && e.points > 0;
@@ -1056,6 +1158,7 @@ function ManagerView({ state, managerId, actions }) {
               </div>
             );
           })}
+          </div>
         </div>
       )}
 
@@ -1067,20 +1170,25 @@ function ManagerView({ state, managerId, actions }) {
           </select>
           <label className="text-xs tp-slate-text">Training module</label>
           <select className="tp-input" value={assignMod} onChange={e => setAssignMod(e.target.value)}>
-            {state.modules.map(m => <option key={m.id} value={m.id}>{m.title}</option>)}
+            {[...state.modules].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).map(m => <option key={m.id} value={m.id}>{m.title}{m.hasQuiz ? " (has quiz)" : ""}</option>)}
           </select>
-          <button onClick={() => actions.assign(assignEmp, assignMod, myName)} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2 justify-center">
+          <label className="text-xs tp-slate-text">Passing score required {state.modules.find(m => m.id === assignMod)?.hasQuiz ? "" : "(no quiz on this module yet)"}</label>
+          <input type="number" min={0} max={100} className="tp-input" value={assignPassThreshold} onChange={e => setAssignPassThreshold(Number(e.target.value))} />
+          <p className="text-xs tp-slate-text -mt-1">They get 3 attempts. Falling short restarts the module; a 3rd miss auto-escalates to the admin team.</p>
+          <button onClick={() => actions.assign(assignEmp, assignMod, myName, assignPassThreshold)} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2 justify-center">
             <Send size={15} /> Assign module
           </button>
         </div>
       )}
+
+      {tab === "library" && <TrainingLibrary modules={state.modules} />}
 
       {tab === "progress" && (
         <div className="tp-card overflow-x-auto tp-scrollbar">
           <table className="w-full text-sm">
             <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
               <th className="p-3">Employee</th><th className="p-3">Module</th><th className="p-3">Progress</th>
-              <th className="p-3"><Clock size={13} className="inline mr-1" />Time</th><th className="p-3">Quiz Score</th>
+              <th className="p-3"><Clock size={13} className="inline mr-1" />Time</th><th className="p-3">Quiz Score</th><th className="p-3"></th>
             </tr></thead>
             <tbody>
               {state.assignments.filter(a => team.some(t => t.id === a.employeeId)).map(a => {
@@ -1091,8 +1199,14 @@ function ManagerView({ state, managerId, actions }) {
                     <td className="p-3 font-medium">{emp?.name}</td>
                     <td className="p-3">{mod?.title}</td>
                     <td className="p-3 w-32"><ProgressBar value={a.progress} /></td>
-                    <td className="p-3">{a.timeSpentMin}m</td>
+                    <td className="p-3">{formatActiveTime(a.activeSeconds, a.timeSpentMin)}</td>
                     <td className="p-3">{a.quizScore != null ? `${a.quizScore}%` : "—"}</td>
+                    <td className="p-3">
+                      {a.status !== "completed" && (
+                        <button onClick={() => actions.sendReminder(emp?.id, `Reminder from ${myName}: please finish "${mod?.title}".`)}
+                          className="text-xs tp-blue-text hover:underline">Send reminder</button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
@@ -1118,12 +1232,67 @@ function ManagerView({ state, managerId, actions }) {
     </div>
   );
 }
+function CelebrationsBanner({ celebrations }) {
+  if (!celebrations || celebrations.length === 0) return null;
+  const recent = celebrations.slice(0, 3);
+  return (
+    <div className="tp-card p-4 mb-4" style={{ background: "linear-gradient(135deg, #0B2545, #143563)" }}>
+      <div className="font-semibold text-white mb-2 flex items-center gap-2"><Trophy size={16} className="tp-gold-text" /> Celebrations</div>
+      <div className="grid gap-2">
+        {recent.map(c => (
+          <div key={c.id} className="tp-pop" style={{ background: "rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
+            <div className="text-sm font-semibold text-white flex items-center gap-2"><Crown size={13} className="tp-gold-text" /> {c.title}</div>
+            {c.description && <div className="text-xs mt-1" style={{ color: "rgba(255,255,255,0.75)" }}>{c.description}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TrainingLibrary({ modules }) {
+  const sorted = [...modules].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  return (
+    <div className="grid gap-3">
+      {sorted.length === 0 && <div className="text-sm tp-slate-text">No training material uploaded yet.</div>}
+      {sorted.map(m => (
+        <div key={m.id} className="tp-card p-4">
+          <div className="flex items-center justify-between mb-1">
+            <div className="font-semibold flex items-center gap-2">{m.title}
+              {m.mandatory && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-red-text" style={{ background: "#D6534A18" }}>Mandatory</span>}
+              {m.hasQuiz && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-blue-text" style={{ background: "#0071CE18" }}>Has quiz</span>}
+            </div>
+            {m.createdAt && <span className="text-xs tp-slate-text">{m.createdAt.slice(0, 10)}</span>}
+          </div>
+          <p className="text-sm tp-slate-text mb-2">{m.desc}</p>
+          {m.attachments?.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {m.attachments.map((f, i) => (
+                <a key={i} href={f.url} target="_blank" rel="noreferrer" className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
+                  <Paperclip size={11} /> {f.name}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TraineeView({ state, employeeId, actions }) {
   const [tab, setTab] = useState("training");
   const [activeQuiz, setActiveQuiz] = useState(null);
   const [qIndex, setQIndex] = useState(0);
   const [answers, setAnswers] = useState([]);
   const [result, setResult] = useState(null);
+  const [studyingAssignment, setStudyingAssignment] = useState(null);
+
+  useEffect(() => {
+    actions.checkStalledModules(employeeId);
+    actions.checkUpcomingClasses(employeeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeId]);
 
   const emp = state.employees.find(e => e.id === employeeId);
   const myAssignments = state.assignments.filter(a => a.employeeId === employeeId);
@@ -1163,6 +1332,7 @@ function TraineeView({ state, employeeId, actions }) {
     <div>
       <Tabs active={tab} onChange={setTab} tabs={[
         { key: "training", label: "My Training", icon: BookOpen },
+        { key: "library", label: "Training Library", icon: FileText },
         { key: "achievements", label: "Achievements", icon: Trophy },
       ]} />
 
@@ -1190,20 +1360,36 @@ function TraineeView({ state, employeeId, actions }) {
                 )}
                 <ProgressBar value={a.progress} />
                 <div className="flex items-center justify-between mt-3">
-                  <span className="text-xs tp-slate-text">{a.progress}% complete · {a.timeSpentMin} min spent</span>
-                  {mod.hasQuiz && a.quizScore == null && (
-                    <button onClick={() => startQuiz(mod.id)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">Take quiz</button>
-                  )}
-                  {a.quizScore != null && <span className="text-xs tp-green-text font-semibold flex items-center gap-1"><CheckCircle2 size={13} /> Scored {a.quizScore}%</span>}
+                  <span className="text-xs tp-slate-text">{a.progress}% complete · {formatActiveTime(a.activeSeconds, a.timeSpentMin)}</span>
+                  <div className="flex items-center gap-2">
+                    {a.status !== "completed" && (
+                      <button onClick={() => setStudyingAssignment(a)} className="tp-btn-gold rounded-lg px-3 py-1.5 text-xs font-semibold">Study</button>
+                    )}
+                    {mod.hasQuiz && a.status !== "completed" && (
+                      <button onClick={() => startQuiz(mod.id)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">
+                        {a.attempts > 0 ? "Retake quiz" : "Take quiz"}
+                      </button>
+                    )}
+                  </div>
+                  {a.status === "completed" && <span className="text-xs tp-green-text font-semibold flex items-center gap-1"><CheckCircle2 size={13} /> Passed — {a.quizScore}%</span>}
                 </div>
+                {mod.hasQuiz && a.status !== "completed" && (
+                  <div className="text-[11px] tp-slate-text mt-1">
+                    Need {a.passThreshold ?? 80}%+ to pass · Attempt {a.attempts || 0} of 3
+                    {a.attempts > 0 && a.quizScore != null && <span className="tp-red-text"> · last score {a.quizScore}%</span>}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
 
+      {tab === "library" && <TrainingLibrary modules={state.modules} />}
+
       {tab === "achievements" && (
         <div>
+          <CelebrationsBanner celebrations={state.celebrations} />
           {isTopOfMonth && (
             <div className="tp-card p-5 mb-4 tp-pop tp-glow relative overflow-hidden" style={{ background: "linear-gradient(135deg, #0B2545, #143563)" }}>
               <div className="flex items-center gap-4">
@@ -1293,11 +1479,23 @@ function TraineeView({ state, employeeId, actions }) {
             <div className="text-center py-4 tp-pop">
               <Sparkles size={36} className="tp-gold-text mx-auto mb-2" />
               <div className="tp-display font-bold text-2xl mb-1">{result}%</div>
-              <div className="tp-slate-text text-sm mb-4">{result >= 80 ? "Great work — badge points added!" : "Nice try — review the module and retake later."}</div>
+              <div className="tp-slate-text text-sm mb-4">
+                {result >= (myAssignments.find(a => a.moduleId === activeQuiz)?.passThreshold ?? 80)
+                  ? "Great work — badge points added!"
+                  : "Below the required score — the module has restarted. Check your remaining attempts."}
+              </div>
               <button onClick={() => setActiveQuiz(null)} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Close</button>
             </div>
           )}
         </Modal>
+      )}
+      {studyingAssignment && (
+        <StudyModal
+          mod={state.modules.find(m => m.id === studyingAssignment.moduleId)}
+          assignment={studyingAssignment}
+          onClose={() => setStudyingAssignment(null)}
+          onLogTime={(elapsedSeconds) => actions.logStudyTime(studyingAssignment.id, employeeId, studyingAssignment.moduleId, elapsedSeconds)}
+        />
       )}
     </div>
   );
@@ -1499,14 +1697,20 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
                   <div key={en.employeeId} className="border rounded-lg p-3" style={{ borderColor: "var(--line)" }}>
                     <div className="flex items-center justify-between mb-2">
                       <div className="font-medium text-sm flex items-center gap-2">{emp?.name} <DeptBadge dept={emp?.dept} /></div>
-                      {activeClass.quizEnabled && (
-                        scope === "admin" ? (
-                          <input type="number" className="tp-input w-20 text-xs" placeholder="Score %" defaultValue={en.quizScore ?? ""}
-                            onBlur={e => actions.setClassQuizScore(activeClass.id, en.employeeId, e.target.value === "" ? null : Number(e.target.value))} />
-                        ) : (
-                          <span className="text-xs font-semibold">{en.quizScore != null ? `${en.quizScore}%` : "Not scored yet"}</span>
-                        )
-                      )}
+                      <div className="flex items-center gap-2">
+                        {scope === "manager" && (
+                          <button onClick={() => actions.sendReminder(emp?.id, `Reminder from ${actorName}: don't forget "${activeClass.name}" on ${activeClass.date}.`)}
+                            className="text-xs tp-blue-text hover:underline">Send reminder</button>
+                        )}
+                        {activeClass.quizEnabled && (
+                          scope === "admin" ? (
+                            <input type="number" className="tp-input w-20 text-xs" placeholder="Score %" defaultValue={en.quizScore ?? ""}
+                              onBlur={e => actions.setClassQuizScore(activeClass.id, en.employeeId, e.target.value === "" ? null : Number(e.target.value))} />
+                          ) : (
+                            <span className="text-xs font-semibold">{en.quizScore != null ? `${en.quizScore}%` : "Not scored yet"}</span>
+                          )
+                        )}
+                      </div>
                     </div>
                     <div className="text-xs tp-slate-text mb-1">Comments</div>
                     <div className="grid gap-1 mb-2">
@@ -1727,9 +1931,10 @@ function MonthlyFeedbackView({ state, managerId, actions }) {
 
   const submit = (employeeId) => {
     const d = drafts[employeeId] || {};
+    const combinedComment = d.comment + (d.development ? `\n\nDevelopment notes: ${d.development}` : "");
     actions.submitMonthlyFeedback({
       id: Date.now(), managerId, employeeId, month: monthKey,
-      needsTraining: !!d.needsTraining, comment: d.comment || "", submittedAt: new Date().toISOString().slice(0, 10),
+      needsTraining: !!d.needsTraining, comment: combinedComment, submittedAt: new Date().toISOString().slice(0, 10),
     });
   };
 
@@ -1744,7 +1949,8 @@ function MonthlyFeedbackView({ state, managerId, actions }) {
       <div className="grid gap-3">
         {team.map(e => {
           const submitted = submittedFor(e.id);
-          const d = drafts[e.id] || { needsTraining: false, comment: "" };
+          const d = drafts[e.id] || { needsTraining: false, comment: "", development: "" };
+          const myAssignments = state.assignments.filter(a => a.employeeId === e.id);
           return (
             <div key={e.id} className="tp-card p-4">
               <div className="flex items-center justify-between mb-2">
@@ -1752,14 +1958,22 @@ function MonthlyFeedbackView({ state, managerId, actions }) {
                 {submitted ? <span className="text-xs tp-green-text font-semibold flex items-center gap-1"><CheckCircle2 size={13} /> Submitted {submitted.submittedAt}</span>
                   : <span className="text-xs tp-red-text font-semibold">Not submitted this month</span>}
               </div>
+              <div className="text-xs tp-slate-text mb-2">
+                {myAssignments.length === 0 ? "No online material assigned yet." : myAssignments.map(a => {
+                  const mod = state.modules.find(m => m.id === a.moduleId);
+                  return `${mod?.title} (${a.status === "completed" ? `passed ${a.quizScore}%` : a.status.replace("_", " ")})`;
+                }).join(" · ")}
+              </div>
               {!submitted && (
                 <div className="grid gap-2">
                   <label className="flex items-center gap-2 text-sm">
                     <input type="checkbox" checked={d.needsTraining} onChange={ev => setDrafts({ ...drafts, [e.id]: { ...d, needsTraining: ev.target.checked } })} />
                     This employee needs additional training
                   </label>
-                  <textarea className="tp-input" rows={2} placeholder="Monthly feedback comments"
+                  <textarea className="tp-input" rows={2} placeholder="General feedback comments"
                     value={d.comment} onChange={ev => setDrafts({ ...drafts, [e.id]: { ...d, comment: ev.target.value } })} />
+                  <textarea className="tp-input" rows={2} placeholder="Development notes (growth, promotion readiness, anything worth tracking)"
+                    value={d.development} onChange={ev => setDrafts({ ...drafts, [e.id]: { ...d, development: ev.target.value } })} />
                   <div className="flex items-center gap-2">
                     <button onClick={() => submit(e.id)} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium">Submit feedback</button>
                     {d.needsTraining && <span className="text-xs tp-slate-text">Enroll them in a class from the In-Class Training tab.</span>}
@@ -1831,6 +2045,49 @@ function ManagerLoginGate({ managers, onSuccess, onGoToSignUp }) {
   );
 }
 
+function StudyModal({ mod, assignment, onClose, onLogTime }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(Date.now());
+  const pausedRef = useRef(false);
+
+  useEffect(() => {
+    const tick = setInterval(() => { if (!pausedRef.current) setElapsed(e => e + 1); }, 1000);
+    const onVisibility = () => { pausedRef.current = document.hidden; };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(tick);
+      document.removeEventListener("visibilitychange", onVisibility);
+      onLogTime(elapsed);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+
+  return (
+    <Modal title={mod.title} onClose={onClose}>
+      <div className="flex items-center justify-center gap-2 mb-4 tp-card p-3" style={{ background: "#0071CE10" }}>
+        <Clock size={16} className="tp-blue-text" />
+        <span className="tp-display font-bold text-lg tracking-wide">{mm}:{ss}</span>
+        <span className="text-xs tp-slate-text">this session — pauses if you switch tabs</span>
+      </div>
+      <p className="text-sm tp-slate-text mb-3 whitespace-pre-wrap">{mod.desc}</p>
+      {mod.attachments?.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          {mod.attachments.map((f, i) => (
+            <a key={i} href={f.url} target="_blank" rel="noreferrer" className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
+              <Paperclip size={11} /> {f.name}
+            </a>
+          ))}
+        </div>
+      )}
+      <div className="text-xs tp-slate-text mb-3">Total time on this module so far: {formatActiveTime(assignment.activeSeconds, assignment.timeSpentMin)}</div>
+      <button onClick={onClose} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Done studying for now</button>
+    </Modal>
+  );
+}
+
 function ChangePasswordModal({ onClose, onSubmit }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -1863,6 +2120,34 @@ function ChangePasswordModal({ onClose, onSubmit }) {
           <button onClick={submit} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-1">Update password</button>
         </div>
       )}
+    </Modal>
+  );
+}
+
+function InstallGuideModal({ onClose }) {
+  return (
+    <Modal title="Add this to your phone's home screen" onClose={onClose}>
+      <div className="grid gap-4">
+        <div>
+          <div className="font-semibold text-sm mb-1 flex items-center gap-2"><Smartphone size={15} className="tp-blue-text" /> iPhone (Safari)</div>
+          <ol className="text-sm tp-slate-text list-decimal list-inside grid gap-1">
+            <li>Open this link in Safari</li>
+            <li>Tap the Share icon (square with an arrow) at the bottom</li>
+            <li>Scroll down and tap "Add to Home Screen"</li>
+            <li>Tap "Add" in the top right</li>
+          </ol>
+        </div>
+        <div>
+          <div className="font-semibold text-sm mb-1 flex items-center gap-2"><Smartphone size={15} className="tp-blue-text" /> Android (Chrome)</div>
+          <ol className="text-sm tp-slate-text list-decimal list-inside grid gap-1">
+            <li>Open this link in Chrome</li>
+            <li>Tap the ⋮ menu in the top right</li>
+            <li>Tap "Add to Home Screen" or "Install app"</li>
+            <li>Confirm</li>
+          </ol>
+        </div>
+        <div className="text-xs tp-slate-text">Once added, it opens full-screen from your home screen like a regular app — no app store needed.</div>
+      </div>
     </Modal>
   );
 }
@@ -1998,6 +2283,8 @@ export default function AmplifyTrainingApp() {
   const [reports, setReports] = useState([]);
   const [departmentsVersion, setDepartmentsVersion] = useState(0);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
+  const [celebrations, setCelebrations] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -2055,6 +2342,9 @@ export default function AmplifyTrainingApp() {
         const dbReports = await sbSelect("reports", "select=*&order=created_at.desc");
         setReports(dbReports.map(fromDbReport));
 
+        const dbCelebrations = await sbSelect("celebrations", "select=*&order=created_at.desc");
+        setCelebrations(dbCelebrations.map(fromDbCelebration));
+
         setDataStatus({ loading: false, error: null, connected: true });
       } catch (err) {
         setDataStatus({ loading: false, error: err.message, connected: false });
@@ -2092,7 +2382,7 @@ export default function AmplifyTrainingApp() {
   const myNotifications = role === "admin" ? notifications.filter(n => n.audience === "admin" || !n.audience)
     : role === "manager" ? notifications.filter(n => n.audience === "manager" && n.recipientId === loggedInManagerId)
     : notifications.filter(n => n.audience === "trainee" && n.recipientId === loggedInEmployeeId);
-  const state = { employees, modules, assignments, pending, quizzes, classTrainings, notifications, monthlyFeedback, endorsements, coachingSessions, credentialsToShare, trainingRequests, reports };
+  const state = { employees, modules, assignments, pending, quizzes, classTrainings, notifications, monthlyFeedback, endorsements, coachingSessions, credentialsToShare, trainingRequests, reports, celebrations };
 
   const notify = (text, audience = "admin", recipientId = null) => {
     setNotifications(prev => [{ id: Date.now() + Math.random(), text, audience, recipientId, date: new Date().toISOString().slice(0, 10) }, ...prev]);
@@ -2154,6 +2444,9 @@ export default function AmplifyTrainingApp() {
         setEmployees([...employees, newEmp]);
         if (!p.password) setCredentialsToShare([{ id: newEmp.id, name: newEmp.name, password }, ...credentialsToShare]);
         logActivity(`${p.name} approved as ${assignedRole}${assignedRole === "manager" ? "" : `, reporting to ${managerName(managers, finalManagerId)}`}.`, "approval", null, newEmp.id);
+        if (assignedRole === "manager") {
+          notify(`Welcome! You now have full manager access — team management, training assignment, in-class calendar, coaching, and monthly feedback, same as every other manager.`, "manager", newEmp.id);
+        }
       } catch (err) {
         const newId = Date.now();
         setEmployees([...employees, { id: newId, ...localEmp }]);
@@ -2167,31 +2460,108 @@ export default function AmplifyTrainingApp() {
       try { await sbDelete("pending_signups", "id", id); }
       catch (err) { setDataStatus({ ...dataStatus, error: `Couldn't remove request from database: ${err.message}` }); }
     },
-    assign: async (employeeId, moduleId, actorName) => {
+    assign: async (employeeId, moduleId, actorName, passThreshold = 80) => {
       if (assignments.some(a => a.employeeId === employeeId && a.moduleId === moduleId)) return;
       const mod = modules.find(m => m.id === moduleId);
       try {
-        const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started" }]);
+        const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started", pass_threshold: passThreshold, attempts: 0, active_seconds: 0 }]);
         setAssignments(prev => [...prev, fromDbAssignment(inserted)]);
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't save assignment to database: ${err.message}` }));
-        setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started" }]);
+        setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started", passThreshold, attempts: 0, activeSeconds: 0, assignedAt: new Date().toISOString() }]);
       }
-      notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}.`, "trainee", employeeId);
-      logActivity(`Assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}.`, "assignment", null, employeeId);
+      notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}. You need ${passThreshold}%+ on the quiz to complete it.`, "trainee", employeeId);
+      logActivity(`Assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""} — pass threshold ${passThreshold}%.`, "assignment", null, employeeId);
     },
     submitQuiz: async (employeeId, moduleId, score) => {
       const existing = assignments.find(a => a.employeeId === employeeId && a.moduleId === moduleId);
-      setAssignments(assignments.map(a => a.employeeId === employeeId && a.moduleId === moduleId
-        ? { ...a, quizScore: score, progress: 100, status: "completed" } : a));
       const mod = modules.find(m => m.id === moduleId);
       const emp = employees.find(e => e.id === employeeId);
-      if (score >= 80 && mod && emp) {
-        setEmployees(employees.map(e => e.id === employeeId ? { ...e, points: e.points + mod.points, streak: e.streak + 1 } : e));
-        sbUpdate("employees", "id", employeeId, { points: emp.points + mod.points, streak: emp.streak + 1 }).catch(() => {});
+      const threshold = existing?.passThreshold ?? 80;
+      const attempts = (existing?.attempts || 0) + 1;
+      const passed = score >= threshold;
+
+      if (passed) {
+        setAssignments(assignments.map(a => a.employeeId === employeeId && a.moduleId === moduleId
+          ? { ...a, quizScore: score, progress: 100, status: "completed", attempts } : a));
+        if (mod && emp) {
+          setEmployees(employees.map(e => e.id === employeeId ? { ...e, points: e.points + mod.points, streak: e.streak + 1 } : e));
+          sbUpdate("employees", "id", employeeId, { points: emp.points + mod.points, streak: emp.streak + 1 }).catch(() => {});
+        }
+        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed", attempts }).catch(() => {});
+        notify(`You passed the quiz for "${mod?.title}" — ${score}%! Module complete.`, "trainee", employeeId);
+        logActivity(`${emp?.name || "Employee"} passed quiz for "${mod?.title}" — scored ${score}% (needed ${threshold}%), attempt ${attempts}.`, "quiz_completed", null, employeeId);
+      } else {
+        // Failed — restart the module (progress resets), but keep the attempt count.
+        setAssignments(assignments.map(a => a.employeeId === employeeId && a.moduleId === moduleId
+          ? { ...a, quizScore: score, progress: 0, status: "in_progress", attempts } : a));
+        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 0, status: "in_progress", attempts }).catch(() => {});
+        logActivity(`${emp?.name || "Employee"} failed quiz for "${mod?.title}" — scored ${score}% (needed ${threshold}%), attempt ${attempts} of 3.`, "quiz_failed", null, employeeId);
+
+        if (attempts >= 3) {
+          notify(`You didn't reach ${threshold}% on "${mod?.title}" after 3 attempts. This has been escalated to the admin team for additional support.`, "trainee", employeeId);
+          const managerId = emp?.managerId;
+          try {
+            const [inserted] = await sbInsert("coaching_sessions", [{
+              employee_id: employeeId, manager_id: managerId, category: "Training Performance",
+              notes: `Automatic escalation: failed to reach the required ${threshold}% on "${mod?.title}" after 3 attempts (scores logged in quiz history).`,
+              escalated: true,
+            }]);
+            setCoachingSessions(prev => [...prev, fromDbCoaching(inserted)]);
+          } catch (err) {
+            setDataStatus(s => ({ ...s, error: `Couldn't save auto-escalation: ${err.message}` }));
+          }
+          notify(`${emp?.name} was auto-escalated after 3 failed attempts on "${mod?.title}" (needed ${threshold}%).`, "admin");
+          logActivity(`${emp?.name || "Employee"} auto-escalated after 3 failed quiz attempts on "${mod?.title}".`, "escalation", null, employeeId);
+        } else {
+          notify(`You scored ${score}% on "${mod?.title}" — ${threshold}% needed to pass. Please restart the module. Attempt ${attempts} of 3.`, "trainee", employeeId);
+        }
       }
-      if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed" }).catch(() => {});
-      logActivity(`${emp?.name || "Employee"} completed quiz for "${mod?.title}" — scored ${score}%.`, "quiz_completed", null, employeeId);
+    },
+    sendReminder: (employeeId, text) => {
+      notify(text, "trainee", employeeId);
+      logActivity(`Reminder sent: "${text}"`, "reminder_sent", null, employeeId);
+    },
+    checkFeedbackOverdue: (managerId, missingNames) => {
+      const already = notifications.some(n => n.audience === "manager" && n.recipientId === managerId && n.text.includes("Monthly feedback is overdue"));
+      if (already) return;
+      notify(`Monthly feedback is overdue for: ${missingNames.join(", ")}. Please submit it in the Monthly Feedback tab.`, "manager", managerId);
+    },
+    checkStalledModules: (employeeId) => {
+      const fiveHoursMs = 5 * 60 * 60 * 1000;
+      const mine = assignments.filter(a => a.employeeId === employeeId && a.status !== "completed" && a.assignedAt);
+      mine.forEach(a => {
+        const assignedAt = new Date(a.assignedAt).getTime();
+        if (Date.now() - assignedAt > fiveHoursMs) {
+          const already = notifications.some(n => n.audience === "trainee" && n.recipientId === employeeId && n.text.includes(`finish "${modules.find(m => m.id === a.moduleId)?.title}"`));
+          if (!already) {
+            const mod = modules.find(m => m.id === a.moduleId);
+            notify(`Reminder: please finish "${mod?.title}" — it's been assigned for over 5 hours.`, "trainee", employeeId);
+          }
+        }
+      });
+    },
+    checkUpcomingClasses: (employeeId) => {
+      const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+      classTrainings.forEach(c => {
+        if (c.date === tomorrowStr && c.enrollments.some(en => en.employeeId === employeeId)) {
+          const already = notifications.some(n => n.audience === "trainee" && n.recipientId === employeeId && n.text.includes(`"${c.name}" is tomorrow`));
+          if (!already) notify(`"${c.name}" is tomorrow (${c.date}). Make sure you're ready to attend.`, "trainee", employeeId);
+        }
+      });
+    },
+    logStudyTime: async (assignmentId, employeeId, moduleId, elapsedSeconds) => {
+      if (!elapsedSeconds || elapsedSeconds < 2) return; // ignore accidental instant-close
+      const existing = assignments.find(a => a.id === assignmentId);
+      const newActiveSeconds = (existing?.activeSeconds || 0) + elapsedSeconds;
+      const newMin = Math.round(newActiveSeconds / 60);
+      const newProgress = existing?.status === "completed" ? existing.progress : Math.max(existing?.progress || 0, 25);
+      const newStatus = existing?.status === "not_started" ? "in_progress" : existing?.status;
+      setAssignments(assignments.map(a => a.id === assignmentId
+        ? { ...a, activeSeconds: newActiveSeconds, timeSpentMin: newMin, progress: newProgress, status: newStatus } : a));
+      try { await sbUpdate("assignments", "id", assignmentId, { active_seconds: newActiveSeconds, time_spent_minutes: newMin, progress: newProgress, status: newStatus }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save study time: ${err.message}` })); }
     },
     signUp: async (name, email, dept, managerId, password, requestedRole = "trainee") => {
       const { first_name, last_name } = splitName(name);
@@ -2412,6 +2782,33 @@ export default function AmplifyTrainingApp() {
       } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete file from database: ${err.message}` })); }
       logActivity(`Deleted material "${attachment.name}".`, "material_deleted", null, null);
     },
+    addCelebration: async (title, description, category) => {
+      try {
+        const [inserted] = await sbInsert("celebrations", [{ title, description, category }]);
+        setCelebrations(prev => [fromDbCelebration(inserted), ...prev]);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't save celebration to database: ${err.message}` }));
+        setCelebrations(prev => [{ id: Date.now(), title, description, category, date: new Date().toISOString().slice(0, 10) }, ...prev]);
+      }
+      logActivity(`Celebration posted: "${title}".`, "celebration", null, null);
+    },
+    deleteCelebration: async (id) => {
+      setCelebrations(celebrations.filter(c => c.id !== id));
+      try { await sbDelete("celebrations", "id", id); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete celebration from database: ${err.message}` })); }
+    },
+    deleteReport: async (id) => {
+      const report = reports.find(r => r.id === id);
+      setReports(reports.filter(r => r.id !== id));
+      try {
+        await sbDelete("reports", "id", id);
+        if (report?.fileUrl) {
+          const path = report.fileUrl.split(`/${STORAGE_BUCKET}/`)[1];
+          if (path) await sbDeleteFile(path);
+        }
+      } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete report file: ${err.message}` })); }
+      logActivity(`Deleted report "${report?.fileName}".`, "material_deleted", null, null);
+    },
   };
 
   const roleMeta = {
@@ -2439,6 +2836,9 @@ export default function AmplifyTrainingApp() {
             </div>
           </div>
           <div className="tp-card p-1 flex gap-1 items-center">
+            <button onClick={() => setShowInstallGuide(true)} className="p-2 rounded-lg hover:bg-gray-50" title="Add to phone home screen">
+              <Smartphone size={15} className="tp-navy-text" />
+            </button>
             {Object.entries(roleMeta).map(([key, meta]) => (
               <button key={key} onClick={() => { setRole(key); setShowSignUp(false); setLoggedInEmployeeId(null); setLoggedInManagerId(null); setAdminAuthenticated(false); clearSession(); }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${role === key ? "tp-tab-active" : "tp-tab hover:bg-gray-50"}`}>
@@ -2471,7 +2871,7 @@ export default function AmplifyTrainingApp() {
 
         <div className="tp-glass p-3 md:p-5">
           {role === "trainee" && !loggedInEmployeeId && !showSignUp && (
-            <EmployeeLoginGate employees={employees} onSuccess={(id) => { setLoggedInEmployeeId(id); saveSession({ type: "trainee", id }); }} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} />
+            <EmployeeLoginGate employees={employees} onSuccess={(id) => { setLoggedInEmployeeId(id); saveSession({ type: "trainee", id }); logActivity(`${employees.find(e => e.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} />
           )}
           {role === "trainee" && loggedInEmployeeId && (
             <div className="flex items-center justify-between mb-3">
@@ -2484,7 +2884,7 @@ export default function AmplifyTrainingApp() {
           )}
 
           {role === "manager" && !loggedInManagerId && !showSignUp && (
-            <ManagerLoginGate managers={managers} onSuccess={(id) => { setLoggedInManagerId(id); saveSession({ type: "manager", id }); }} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} />
+            <ManagerLoginGate managers={managers} onSuccess={(id) => { setLoggedInManagerId(id); saveSession({ type: "manager", id }); logActivity(`${managers.find(m => m.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} />
           )}
           {role === "manager" && loggedInManagerId && (
             <div className="flex items-center justify-between mb-3">
@@ -2496,7 +2896,7 @@ export default function AmplifyTrainingApp() {
             </div>
           )}
 
-          {role === "admin" && !adminAuthenticated && <AdminLoginGate onSuccess={() => { setAdminAuthenticated(true); saveSession({ type: "admin", id: null }); }} />}
+          {role === "admin" && !adminAuthenticated && <AdminLoginGate onSuccess={() => { setAdminAuthenticated(true); saveSession({ type: "admin", id: null }); logActivity("Admin logged in.", "login", null, null); }} />}
           {role === "admin" && adminAuthenticated && (
             <div className="flex items-center justify-end mb-3">
               <button onClick={() => { setAdminAuthenticated(false); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
@@ -2514,6 +2914,7 @@ export default function AmplifyTrainingApp() {
               onSubmit={(current, next) => actions.changePassword(role === "trainee" ? loggedInEmployeeId : loggedInManagerId, current, next)}
             />
           )}
+          {showInstallGuide && <InstallGuideModal onClose={() => setShowInstallGuide(false)} />}
         </div>
       </div>
     </div>
