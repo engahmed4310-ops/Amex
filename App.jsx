@@ -35,7 +35,7 @@ const Theme = () => (
     .tp-green-text { color: var(--green); }
     .tp-red-text { color: var(--red); }
     .tp-card { background: white; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 10px 30px -18px rgba(11,37,69,0.35); }
-    .tp-glass { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; backdrop-filter: blur(10px); }
+    .tp-glass { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; }
     .tp-btn-primary { background: var(--navy); color: white; transition: background .15s ease, transform .1s ease; }
     .tp-btn-primary:hover { background: #143563; transform: translateY(-1px); }
     .tp-btn-gold { background: linear-gradient(135deg, #E3C27A, var(--gold)); color: var(--navy); box-shadow: 0 6px 16px -6px rgba(201,162,75,0.7); }
