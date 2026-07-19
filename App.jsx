@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
+import mammoth from "mammoth";
 import {
   LayoutDashboard, BookOpen, ClipboardCheck, BarChart3, Users, Send,
   Trophy, Star, Clock, CheckCircle2, XCircle, PlusCircle, Download,
@@ -373,6 +374,9 @@ function AdminView({ state, actions }) {
   const [bulkError, setBulkError] = useState("");
   const [reportFileName, setReportFileName] = useState("");
   const [reportFileObj, setReportFileObj] = useState(null);
+  const [reportFileBase64, setReportFileBase64] = useState(null);
+  const [reportFileMediaType, setReportFileMediaType] = useState(null);
+  const [reportParseNote, setReportParseNote] = useState("");
   const [reportContent, setReportContent] = useState("");
   const [reportQuestion, setReportQuestion] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
@@ -415,35 +419,59 @@ function AdminView({ state, actions }) {
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachError, setAttachError] = useState("");
 
-  const handleReportFile = (file) => {
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  const handleReportFile = async (file) => {
     setReportFileName(file.name);
     setReportFileObj(file);
+    setReportContent(""); setReportFileBase64(null); setReportFileMediaType(null); setReportParseNote("");
     const ext = file.name.split(".").pop().toLowerCase();
-    if (["xlsx", "xls", "csv"].includes(ext)) {
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        try {
-          const wb = XLSX.read(evt.target.result, { type: "array" });
-          const sheet = wb.Sheets[wb.SheetNames[0]];
-          const csv = XLSX.utils.sheet_to_csv(sheet);
-          setReportContent(csv.slice(0, 6000));
-        } catch { /* leave for manual paste */ }
-      };
-      reader.readAsArrayBuffer(file);
+    try {
+      if (["xlsx", "xls", "csv"].includes(ext)) {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        setReportContent(XLSX.utils.sheet_to_csv(sheet).slice(0, 6000));
+      } else if (ext === "pdf") {
+        const base64 = await fileToBase64(file);
+        setReportFileBase64(base64); setReportFileMediaType("application/pdf");
+        setReportParseNote("PDF will be read directly by AI — no need to paste anything.");
+      } else if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) {
+        const base64 = await fileToBase64(file);
+        setReportFileBase64(base64); setReportFileMediaType(file.type || `image/${ext}`);
+        setReportParseNote("Image will be read directly by AI — no need to paste anything.");
+      } else if (ext === "docx") {
+        const buf = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer: buf });
+        setReportContent(result.value.slice(0, 6000));
+      } else {
+        setReportParseNote(`Can't auto-read .${ext} files yet — paste the key content below, or use PDF/Word/Excel/image/CSV.`);
+      }
+    } catch (err) {
+      setReportParseNote(`Couldn't read this file automatically (${err.message}) — paste the key content below instead.`);
     }
-    // PDFs/images/docs: no in-browser parser available here — admin pastes key content below.
   };
 
   const analyzeReport = async () => {
-    if (!reportContent.trim() || !reportQuestion.trim()) return;
+    const hasContent = reportContent.trim() || reportFileBase64;
+    if (!hasContent || !reportQuestion.trim()) return;
     setAnalyzing(true); setAnalyzeError("");
     try {
+      const promptText = `You are analyzing a workplace training/performance report for a manager at a financial services company. Answer the specific question below based on the report content ${reportFileBase64 ? "(the attached file)" : "provided"}. Be concise and concrete, use bullet points where helpful.\n\nQuestion: ${reportQuestion}${reportContent ? `\n\nReport content:\n${reportContent}` : ""}`;
+      const content = reportFileBase64
+        ? [{ type: reportFileMediaType === "application/pdf" ? "document" : "image", source: { type: "base64", media_type: reportFileMediaType, data: reportFileBase64 } }, { type: "text", text: promptText }]
+        : promptText;
       const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000,
-          messages: [{ role: "user", content: `You are analyzing a workplace training/performance report for a manager at a financial services company. Answer the specific question below based only on the report content provided. Be concise and concrete, use bullet points where helpful.\n\nQuestion: ${reportQuestion}\n\nReport content:\n${reportContent}` }],
+          model: "claude-sonnet-4-6", max_tokens: 1200,
+          messages: [{ role: "user", content }],
         }),
       });
       const data = await res.json();
@@ -455,7 +483,7 @@ function AdminView({ state, actions }) {
         catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't upload the report file: ${err.message}` })); }
       }
       actions.saveReport({ fileName: reportFileName || "Pasted content", question: reportQuestion, analysis: text, ...fileInfo });
-      setReportQuestion(""); setReportFileObj(null);
+      setReportQuestion(""); setReportFileObj(null); setReportFileBase64(null); setReportFileMediaType(null); setReportParseNote("");
     } catch (err) {
       setAnalyzeError(`Couldn't analyze that report — ${err.message}`);
     } finally {
@@ -950,15 +978,18 @@ function AdminView({ state, actions }) {
         <div>
           <div className="tp-card p-4 mb-4">
             <div className="font-semibold mb-1 flex items-center gap-2"><FileText size={16} className="tp-blue-text" /> Upload a report for analysis</div>
-            <p className="text-xs tp-slate-text mb-3">Upload any file type — Excel/CSV auto-reads its contents; for PDFs, images, or docs, paste the key content below so it can be analyzed. Then ask a specific question.</p>
+            <p className="text-xs tp-slate-text mb-3">PDF, Word, Excel/CSV, and images are all read automatically — nothing to paste. Just upload and ask your question.</p>
             <input type="file" className="text-xs mb-2 block" onChange={e => e.target.files[0] && handleReportFile(e.target.files[0])} />
             {reportFileName && <div className="text-xs tp-blue-text mb-2">Selected: {reportFileName}</div>}
-            <textarea className="tp-input" rows={4} placeholder="Report content (auto-filled for Excel/CSV, or paste text here for other file types)"
-              value={reportContent} onChange={e => setReportContent(e.target.value)} />
+            {reportParseNote && <div className="text-xs tp-gold-text mb-2">{reportParseNote}</div>}
+            {(!reportFileBase64) && (
+              <textarea className="tp-input" rows={4} placeholder="Report content (auto-filled for Excel/CSV/Word, or paste text here if your file type isn't auto-read)"
+                value={reportContent} onChange={e => setReportContent(e.target.value)} />
+            )}
             <label className="text-xs tp-slate-text mt-2 block">What do you want to know?</label>
             <input className="tp-input" placeholder='e.g. "Which department has the lowest quiz completion rate and why?"'
               value={reportQuestion} onChange={e => setReportQuestion(e.target.value)} />
-            <button onClick={analyzeReport} disabled={analyzing || !reportContent.trim() || !reportQuestion.trim()}
+            <button onClick={analyzeReport} disabled={analyzing || (!reportContent.trim() && !reportFileBase64) || !reportQuestion.trim()}
               className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold mt-3 flex items-center gap-2 disabled:opacity-40">
               <Sparkles size={15} /> {analyzing ? "Analyzing…" : "Analyze with AI"}
             </button>
@@ -2549,6 +2580,22 @@ function AmplifyTrainingAppInner() {
     setNotifications(prev => [{ id: Date.now() + Math.random(), text, audience, recipientId, date: new Date().toISOString().slice(0, 10) }, ...prev]);
     sbInsert("notifications", [{ recipient_id: recipientId, message: text, audience }])
       .catch(err => setDataStatus(s => ({ ...s, error: `A notification didn't save to the database: ${err.message}` })));
+
+    // Best-effort email alongside the in-app notification. Kept silent on
+    // failure by design (e.g. RESEND_API_KEY not set yet) — the in-app
+    // notification is the primary channel and already succeeded above, so
+    // this is a bonus, not something that should throw an error banner
+    // every single time a notification fires before email is set up.
+    if (recipientId) {
+      const person = employees.find(e => e.id === recipientId);
+      if (person?.email) {
+        fetch("/api/send-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: person.email, subject: "New notification in Amplify", text }),
+        }).catch(err => console.warn("Email notification failed to send:", err.message));
+      }
+    }
   };
 
   const logActivity = (description, actionType, actorId = null, employeeId = null) => {
