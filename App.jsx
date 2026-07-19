@@ -385,6 +385,7 @@ function AdminView({ state, actions }) {
   const [deletePasswordInput, setDeletePasswordInput] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [viewAsRole, setViewAsRole] = useState("manager");
+  const [userSearch, setUserSearch] = useState("");
   const [viewAsId, setViewAsId] = useState("");
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachError, setAttachError] = useState("");
@@ -575,6 +576,7 @@ function AdminView({ state, actions }) {
         { key: "content", label: "Content & Quizzes", icon: BookOpen },
         { key: "classes", label: "In-Class Training", icon: Users },
         { key: "approvals", label: "Approvals", icon: ClipboardCheck },
+        { key: "users", label: "Users", icon: Users },
         { key: "analytics", label: "Analytics", icon: BarChart3 },
         { key: "reports", label: "Reports & Analysis", icon: FileText },
         { key: "celebrations", label: "Celebrations", icon: Trophy },
@@ -794,53 +796,56 @@ function AdminView({ state, actions }) {
             ))}
           </div>
 
-          <div className="font-semibold text-sm mb-2 flex items-center gap-2"><Users size={15} /> Employee directory — manager assignments</div>
-          <div className="tp-card overflow-x-auto tp-scrollbar">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
-                <th className="p-3">Employee</th><th className="p-3">Category</th><th className="p-3">Manager</th><th className="p-3"></th>
-              </tr></thead>
-              <tbody>
-                {state.employees.filter(e => e.role === "trainee").map(e => (
-                  <tr key={e.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
-                    <td className="p-3 font-medium">{e.name}</td>
-                    <td className="p-3"><DeptBadge dept={e.dept} /></td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-2">
-                        {!e.managerId && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-red-text" style={{ background: "#D6534A18" }}>No manager</span>}
-                        <select className="tp-input text-xs w-auto" value={e.managerId || ""} onChange={ev => actions.reassignManager(e.id, ev.target.value)}>
-                          <option value="" disabled>Assign manager…</option>
-                          {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                        </select>
-                      </div>
-                    </td>
-                    <td className="p-3">
-                      <button onClick={() => { if (window.confirm(`Delete ${e.name}? This removes their account and all their training records.`)) actions.deleteUser(e.id); }}
-                        className="text-xs tp-red-text hover:underline">Delete</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        </div>
+      )}
 
-          <div className="font-semibold text-sm mb-2 mt-6 flex items-center gap-2"><UserCog size={15} /> Managers</div>
+      {tab === "users" && (
+        <div>
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold text-sm mb-2 flex items-center gap-2"><Users size={15} className="tp-blue-text" /> All registered, approved users</div>
+            <input className="tp-input" placeholder="Search by name or email…" value={userSearch} onChange={e => setUserSearch(e.target.value)} />
+          </div>
           <div className="tp-card overflow-x-auto tp-scrollbar">
             <table className="w-full text-sm">
               <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
-                <th className="p-3">Manager</th><th className="p-3">Category</th><th className="p-3"></th>
+                <th className="p-3">Name</th><th className="p-3">Email</th><th className="p-3">Role</th><th className="p-3">Category</th><th className="p-3">Manager</th><th className="p-3"></th>
               </tr></thead>
               <tbody>
-                {managers.map(m => (
-                  <tr key={m.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
-                    <td className="p-3 font-medium">{m.name}</td>
-                    <td className="p-3"><DeptBadge dept={m.dept} /></td>
-                    <td className="p-3">
-                      <button onClick={() => { if (window.confirm(`Delete ${m.name}? Their team will need a new manager assigned.`)) actions.deleteUser(m.id); }}
-                        className="text-xs tp-red-text hover:underline">Delete</button>
-                    </td>
-                  </tr>
-                ))}
+                {state.employees
+                  .filter(e => {
+                    const q = userSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return e.name.toLowerCase().includes(q) || (e.email || "").toLowerCase().includes(q);
+                  })
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map(e => (
+                    <tr key={e.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
+                      <td className="p-3 font-medium">{e.name}</td>
+                      <td className="p-3 tp-slate-text">{e.email || "—"}</td>
+                      <td className="p-3">
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full tp-ice-bg tp-blue-text" style={{ textTransform: "capitalize" }}>{e.role}</span>
+                      </td>
+                      <td className="p-3"><DeptBadge dept={e.dept} /></td>
+                      <td className="p-3">
+                        {e.role === "trainee" ? (
+                          <div className="flex items-center gap-2">
+                            {!e.managerId && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-red-text" style={{ background: "#D6534A18" }}>None</span>}
+                            <select className="tp-input text-xs w-auto" value={e.managerId || ""} onChange={ev => actions.reassignManager(e.id, ev.target.value)}>
+                              <option value="" disabled>Assign manager…</option>
+                              {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            </select>
+                          </div>
+                        ) : "—"}
+                      </td>
+                      <td className="p-3">
+                        <button onClick={() => { if (window.confirm(`Delete ${e.name} (${e.email || "no email on file"})? This removes their account and all their training records.`)) actions.deleteUser(e.id); }}
+                          className="text-xs tp-red-text hover:underline">Delete</button>
+                      </td>
+                    </tr>
+                  ))}
+                {state.employees.length === 0 && (
+                  <tr><td colSpan={6} className="p-4 text-center text-sm tp-slate-text">No registered users yet.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -2816,10 +2821,13 @@ function AmplifyTrainingAppInner() {
     },
     deleteUser: async (employeeId) => {
       const emp = employees.find(e => e.id === employeeId);
-      setEmployees(employees.filter(e => e.id !== employeeId));
-      try { await sbDelete("employees", "id", employeeId); }
-      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete user from database: ${err.message}` })); }
-      logActivity(`${emp?.name || "A user"} was deleted.`, "user_deleted", null, null);
+      try {
+        await sbDelete("employees", "id", employeeId);
+        setEmployees(employees.filter(e => e.id !== employeeId));
+        logActivity(`${emp?.name || "A user"} was deleted.`, "user_deleted", null, null);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't delete ${emp?.name || "this user"}: ${err.message}` }));
+      }
     },
     deleteQuiz: async (moduleId) => {
       setQuizzes(prev => ({ ...prev, [moduleId]: [] }));
