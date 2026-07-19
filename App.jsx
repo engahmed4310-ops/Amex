@@ -412,7 +412,7 @@ function AdminView({ state, actions }) {
     if (!reportContent.trim() || !reportQuestion.trim()) return;
     setAnalyzing(true); setAnalyzeError("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -421,6 +421,7 @@ function AdminView({ state, actions }) {
         }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || data.error || `Request failed (${res.status})`);
       const text = (data.content || []).map(c => c.text || "").join("");
       let fileInfo = {};
       if (reportFileObj) {
@@ -430,7 +431,7 @@ function AdminView({ state, actions }) {
       actions.saveReport({ fileName: reportFileName || "Pasted content", question: reportQuestion, analysis: text, ...fileInfo });
       setReportQuestion(""); setReportFileObj(null);
     } catch (err) {
-      setAnalyzeError("Couldn't analyze that report — try again.");
+      setAnalyzeError(`Couldn't analyze that report — ${err.message}`);
     } finally {
       setAnalyzing(false);
     }
@@ -475,24 +476,25 @@ function AdminView({ state, actions }) {
     if (!content.trim()) { setQbAiError("Add a title/description to the module, or paste some content above, first."); return; }
     setQbAiGenerating(true); setQbAiError("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/claude", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000,
+          model: "claude-sonnet-4-6", max_tokens: 3000,
           messages: [{
             role: "user",
-            content: `You are creating a multiple-choice quiz for an employee training module at a financial services company in Saudi Arabia. Based on the training content below, write exactly 5 quiz questions, each with 4 answer options and exactly one correct answer. Respond ONLY with valid JSON and nothing else — no markdown fences, no preamble — in this exact shape: [{"q": "question text", "options": ["a","b","c","d"], "correct": 0}]. Training content:\n\n${content}`
+            content: `You are creating a multiple-choice quiz for an employee training module at a financial services company in Saudi Arabia. Based on the training content below, write exactly 15 quiz questions, each with 4 answer options and exactly one correct answer. Respond ONLY with valid JSON and nothing else — no markdown fences, no preamble — in this exact shape: [{"q": "question text", "options": ["a","b","c","d"], "correct": 0}]. Training content:\n\n${content}`
           }]
         })
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || data.error || `Request failed (${res.status})`);
       const textOut = (data.content || []).map(c => c.text || "").join("");
       const clean = textOut.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       setQuizDraft(parsed);
     } catch (err) {
-      setQbAiError("Couldn't generate questions automatically — try adding more content, or write them manually below.");
+      setQbAiError(`Couldn't generate questions automatically — ${err.message}`);
     } finally {
       setQbAiGenerating(false);
     }
@@ -1008,16 +1010,21 @@ function AdminView({ state, actions }) {
                 <option value="manager">Manager</option>
                 <option value="trainee">Trainee</option>
               </select>
-              <select className="tp-input w-auto text-sm" value={viewAsId} onChange={e => setViewAsId(e.target.value)}>
-                <option value="">Select a person…</option>
-                {(viewAsRole === "manager" ? managers : state.employees.filter(e => e.role === "trainee")).map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
+              {(viewAsRole === "manager" ? managers : state.employees.filter(e => e.role === "trainee")).length > 0 && (
+                <select className="tp-input w-auto text-sm" value={viewAsId} onChange={e => setViewAsId(e.target.value)}>
+                  <option value="">General preview (no specific person)</option>
+                  {(viewAsRole === "manager" ? managers : state.employees.filter(e => e.role === "trainee")).map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              )}
             </div>
+            {(viewAsRole === "manager" ? managers : state.employees.filter(e => e.role === "trainee")).length === 0 && (
+              <div className="text-xs tp-slate-text mt-2">No {viewAsRole}s registered yet — showing what the screen looks like with nobody on it.</div>
+            )}
           </div>
-          {viewAsId && viewAsRole === "manager" && <ManagerView state={state} managerId={viewAsId} actions={actions} />}
-          {viewAsId && viewAsRole === "trainee" && <TraineeView state={state} employeeId={viewAsId} actions={actions} />}
+          {viewAsRole === "manager" && <ManagerView state={state} managerId={viewAsId || null} actions={actions} />}
+          {viewAsRole === "trainee" && <TraineeView state={state} employeeId={viewAsId || null} actions={actions} />}
         </div>
       )}
 
@@ -1076,7 +1083,7 @@ function AdminView({ state, actions }) {
                 value={qbAiContent} onChange={e => setQbAiContent(e.target.value)} />
               <button onClick={() => generateQuizForModule(showQuizBuilder)} disabled={qbAiGenerating}
                 className="tp-btn-gold rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-40">
-                {qbAiGenerating ? "Generating…" : "Generate 5 questions with AI"}
+                {qbAiGenerating ? "Generating…" : "Generate 15 questions with AI"}
               </button>
               {qbAiError && <div className="text-xs tp-red-text mt-2">{qbAiError}</div>}
             </div>
@@ -1307,6 +1314,15 @@ function TraineeView({ state, employeeId, actions }) {
   }, [employeeId]);
 
   const emp = state.employees.find(e => e.id === employeeId);
+  if (!emp) {
+    return (
+      <div className="tp-card p-6 text-center">
+        <GraduationCap size={28} className="tp-slate-text mx-auto mb-2" />
+        <div className="font-semibold mb-1">No trainee to preview yet</div>
+        <div className="text-sm tp-slate-text">Once someone registers and is approved, you'll be able to view their screen here.</div>
+      </div>
+    );
+  }
   const myAssignments = state.assignments.filter(a => a.employeeId === employeeId);
   const badge = badgeForPoints(emp.points);
   const leaderboard = [...state.employees].sort((a, b) => b.points - a.points);
@@ -1756,7 +1772,7 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
             <input className="tp-input" placeholder="Class name" value={newClass.name} onChange={e => setNewClass({ ...newClass, name: e.target.value })} />
             <label className="text-xs tp-slate-text">Date</label>
             <input type="date" className="tp-input" value={newClass.date} onChange={e => setNewClass({ ...newClass, date: e.target.value })} />
-            <button onClick={createClass} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-2">Create class</button>
+            <button onClick={() => createClass()} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-2">Create class</button>
           </div>
         </Modal>
       )}
