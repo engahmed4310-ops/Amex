@@ -1629,8 +1629,49 @@ function TraineeClassView({ state, employeeId }) {
   );
 }
 
+function FileViewerModal({ file, onClose }) {
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  const isPdf = ext === "pdf";
+  const isImage = ["png", "jpg", "jpeg", "gif", "webp"].includes(ext);
+  const isOffice = ["doc", "docx", "ppt", "pptx", "xls", "xlsx"].includes(ext);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-2 md:p-4 z-50">
+      <div className="tp-card tp-pop w-full max-w-4xl flex flex-col p-3" style={{ height: "88vh" }}>
+        <div className="flex items-center justify-between mb-2 gap-2">
+          <div className="font-semibold text-sm truncate">{file.name}</div>
+          <div className="flex items-center gap-3 shrink-0">
+            <a href={file.url} target="_blank" rel="noreferrer" className="text-xs tp-blue-text font-medium">Open in new tab</a>
+            <button onClick={onClose}><X size={18} className="tp-slate-text" /></button>
+          </div>
+        </div>
+        <div className="flex-1 rounded-lg overflow-hidden" style={{ background: "#F5F8FC" }}>
+          {isPdf && <iframe src={file.url} className="w-full h-full" style={{ border: "none" }} title={file.name} />}
+          {isImage && (
+            <div className="w-full h-full flex items-center justify-center overflow-auto p-2">
+              <img src={file.url} alt={file.name} style={{ maxWidth: "100%", maxHeight: "100%" }} />
+            </div>
+          )}
+          {isOffice && (
+            <iframe src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(file.url)}`}
+              className="w-full h-full" style={{ border: "none" }} title={file.name} />
+          )}
+          {!isPdf && !isImage && !isOffice && (
+            <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-center p-6">
+              <FileIcon size={32} className="tp-slate-text" />
+              <div className="text-sm tp-slate-text">This file type can't be previewed in-app.</div>
+              <a href={file.url} target="_blank" rel="noreferrer" className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Open file</a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TrainingLibrary({ modules }) {
   const sorted = [...modules].filter(m => !m.archived).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const [viewingFile, setViewingFile] = useState(null);
   return (
     <div className="grid gap-3">
       {sorted.length === 0 && <div className="text-sm tp-slate-text">No training material uploaded yet.</div>}
@@ -1647,14 +1688,15 @@ function TrainingLibrary({ modules }) {
           {m.attachments?.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {m.attachments.map((f, i) => (
-                <a key={i} href={f.url} target="_blank" rel="noreferrer" className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
+                <button key={i} onClick={() => setViewingFile(f)} className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
                   <Paperclip size={11} /> {f.name}
-                </a>
+                </button>
               ))}
             </div>
           )}
         </div>
       ))}
+      {viewingFile && <FileViewerModal file={viewingFile} onClose={() => setViewingFile(null)} />}
     </div>
   );
 }
@@ -1666,6 +1708,7 @@ function TraineeView({ state, employeeId, actions }) {
   const [answers, setAnswers] = useState([]);
   const [result, setResult] = useState(null);
   const [studyingAssignment, setStudyingAssignment] = useState(null);
+  const [viewingFile, setViewingFile] = useState(null);
 
   useEffect(() => {
     actions.checkStalledModules(employeeId);
@@ -1742,9 +1785,9 @@ function TraineeView({ state, employeeId, actions }) {
                 {mod.attachments?.length > 0 && (
                   <div className="flex flex-wrap gap-1 mb-2">
                     {mod.attachments.map((f, i) => (
-                      <a key={i} href={f.url} target="_blank" rel="noreferrer" className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
+                      <button key={i} onClick={() => setViewingFile(f)} className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
                         <Paperclip size={11} /> {f.name}
-                      </a>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -1892,8 +1935,10 @@ function TraineeView({ state, employeeId, actions }) {
           assignment={studyingAssignment}
           onClose={() => setStudyingAssignment(null)}
           onLogTime={(elapsedSeconds) => actions.logStudyTime(studyingAssignment.id, employeeId, studyingAssignment.moduleId, elapsedSeconds)}
+          onViewFile={setViewingFile}
         />
       )}
+      {viewingFile && <FileViewerModal file={viewingFile} onClose={() => setViewingFile(null)} />}
     </div>
   );
 }
@@ -2512,7 +2557,7 @@ function ManagerLoginGate({ managers, onSuccess, onGoToSignUp, onRequestReset })
   );
 }
 
-function StudyModal({ mod, assignment, onClose, onLogTime }) {
+function StudyModal({ mod, assignment, onClose, onLogTime, onViewFile }) {
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef(Date.now());
   const pausedRef = useRef(false);
@@ -2543,9 +2588,9 @@ function StudyModal({ mod, assignment, onClose, onLogTime }) {
       {mod.attachments?.length > 0 && (
         <div className="flex flex-wrap gap-1 mb-3">
           {mod.attachments.map((f, i) => (
-            <a key={i} href={f.url} target="_blank" rel="noreferrer" className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
+            <button key={i} onClick={() => onViewFile(f)} className="text-xs px-2 py-1 rounded-full tp-ice-bg tp-blue-text flex items-center gap-1">
               <Paperclip size={11} /> {f.name}
-            </a>
+            </button>
           ))}
         </div>
       )}
