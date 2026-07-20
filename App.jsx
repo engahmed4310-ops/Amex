@@ -284,7 +284,7 @@ function fromDbAssignment(row) {
 // --- Class trainings (nested: sessions, enrollments, comments) ---
 function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
   return classRows.map(c => ({
-    id: c.id, name: c.name, date: c.class_date, quizEnabled: c.quiz_enabled, trainerName: c.trainer_name || "",
+    id: c.id, name: c.name, date: c.class_date, quizEnabled: c.quiz_enabled, trainerName: c.trainer_name || "", slots: c.slots ?? null,
     sessions: sessionRows.filter(s => s.class_id === c.id).map(s => ({ date: s.session_date, hours: Number(s.hours) })),
     enrollments: enrollRows.filter(e => e.class_id === c.id).map(e => ({
       employeeId: e.employee_id, quizScore: e.quiz_score,
@@ -370,7 +370,7 @@ function AdminView({ state, actions }) {
   const [tab, setTab] = useState("overview");
   const [showNewModule, setShowNewModule] = useState(false);
   const [showQuizBuilder, setShowQuizBuilder] = useState(null);
-  const [newModule, setNewModule] = useState({ title: "", desc: "", points: 50, mandatory: false, attachments: [] });
+  const [newModule, setNewModule] = useState({ title: "", desc: "", points: 100, mandatory: false, attachments: [] });
   const [quizDraft, setQuizDraft] = useState([{ q: "", options: ["", "", "", ""], correct: 0 }]);
   const [qbAiContent, setQbAiContent] = useState("");
   const [qbAiGenerating, setQbAiGenerating] = useState(false);
@@ -553,10 +553,10 @@ function AdminView({ state, actions }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 3000,
+          model: "claude-sonnet-4-6", max_tokens: 4000,
           messages: [{
             role: "user",
-            content: `You are creating a multiple-choice quiz for an employee training module at a financial services company in Saudi Arabia. Based on the training content below, write exactly 15 quiz questions, each with 4 answer options and exactly one correct answer. Respond ONLY with valid JSON and nothing else — no markdown fences, no preamble — in this exact shape: [{"q": "question text", "options": ["a","b","c","d"], "correct": 0}]. Training content:\n\n${content}`
+            content: `You are creating a multiple-choice quiz for an employee training module at a financial services company in Saudi Arabia. Based on the training content below, write exactly 20 quiz questions, each with 4 answer options and exactly one correct answer. Respond ONLY with valid JSON and nothing else — no markdown fences, no preamble — in this exact shape: [{"q": "question text", "options": ["a","b","c","d"], "correct": 0}]. Training content:\n\n${content}`
           }]
         })
       });
@@ -594,7 +594,7 @@ function AdminView({ state, actions }) {
           reader.readAsArrayBuffer(file);
         });
       }
-      const created = await actions.addModule({ title, desc: extractedText.slice(0, 300), points: 50, mandatory: false, attachments: [uploaded] });
+      const created = await actions.addModule({ title, desc: extractedText.slice(0, 300), points: 100, mandatory: false, attachments: [uploaded] });
       setQuizDraft([{ q: "", options: ["", "", "", ""], correct: 0 }]);
       setQbAiContent(extractedText);
       setQbAiError("");
@@ -631,7 +631,7 @@ function AdminView({ state, actions }) {
   const submitModule = () => {
     if (!newModule.title.trim()) return;
     actions.addModule({ id: Date.now(), ...newModule });
-    setNewModule({ title: "", desc: "", points: 50, mandatory: false, attachments: [] });
+    setNewModule({ title: "", desc: "", points: 100, mandatory: false, attachments: [] });
     setShowNewModule(false);
   };
 
@@ -1323,7 +1323,7 @@ function AdminView({ state, actions }) {
                 value={qbAiContent} onChange={e => setQbAiContent(e.target.value)} />
               <button onClick={() => generateQuizForModule(showQuizBuilder)} disabled={qbAiGenerating}
                 className="tp-btn-gold rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-40">
-                {qbAiGenerating ? "Generating…" : "Generate 15 questions with AI"}
+                {qbAiGenerating ? "Generating…" : "Generate 20 questions with AI"}
               </button>
               {qbAiError && <div className="text-xs tp-red-text mt-2">{qbAiError}</div>}
             </div>
@@ -1610,7 +1610,8 @@ function TraineeClassView({ state, employeeId }) {
         <div className="tp-card p-4">
           <div className="font-semibold tp-display text-lg mb-1">{activeClass.name}</div>
           <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}</div>
-          {activeClass.trainerName && <div className="text-xs tp-slate-text mb-3">Trainer: <span className="font-medium">{activeClass.trainerName}</span></div>}
+          {activeClass.trainerName && <div className="text-xs tp-slate-text mb-1">Trainer: <span className="font-medium">{activeClass.trainerName}</span></div>}
+          {activeClass.slots != null && <div className="text-xs tp-slate-text mb-3">{activeClass.enrollments.length} of {activeClass.slots} slots filled</div>}
           <div className="text-xs font-medium tp-slate-text mb-1">Hours logged</div>
           <div className="flex flex-wrap gap-2 mb-3">
             {activeClass.sessions.length === 0 && <span className="text-xs tp-slate-text">No sessions logged yet.</span>}
@@ -2000,8 +2001,9 @@ function TrainingCalendar({ classTrainings, onSelectClass, onAddDay, canAdd }) {
 function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
   const [classTab, setClassTab] = useState(null);
   const [showNewClass, setShowNewClass] = useState(false);
-  const [newClass, setNewClass] = useState({ name: "", date: "", trainerName: "" });
+  const [newClass, setNewClass] = useState({ name: "", date: "", trainerName: "", slots: "" });
   const [enrollId, setEnrollId] = useState("");
+  const [enrollError, setEnrollError] = useState("");
   const [sessionDraft, setSessionDraft] = useState({ date: "", hours: "" });
   const [commentDraft, setCommentDraft] = useState({});
   const [requestForm, setRequestForm] = useState({ title: "", reason: "", suggestedDate: "" });
@@ -2021,9 +2023,10 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
   const createClass = async (prefillDate) => {
     if (!newClass.name.trim() || !(newClass.date || prefillDate)) return;
     const trainerName = newClass.trainerName;
-    setNewClass({ name: "", date: "", trainerName: "" });
+    const slots = newClass.slots ? Number(newClass.slots) : null;
+    setNewClass({ name: "", date: "", trainerName: "", slots: "" });
     setShowNewClass(false);
-    const created = await actions.addClassTraining({ name: newClass.name, date: prefillDate || newClass.date, trainerName }, actorName);
+    const created = await actions.addClassTraining({ name: newClass.name, date: prefillDate || newClass.date, trainerName, slots }, actorName);
     setClassTab(created.id);
   };
 
@@ -2103,13 +2106,23 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
                 <div className="font-semibold tp-display text-lg">{activeClass.name}</div>
                 <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}</div>
                 {scope === "admin" ? (
-                  <div className="flex items-center gap-2 mb-3">
+                  <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs tp-slate-text">Trainer:</span>
                     <input key={activeClass.id} className="tp-input text-xs w-auto" placeholder="Add trainer name"
                       defaultValue={activeClass.trainerName} onBlur={e => { if (e.target.value !== activeClass.trainerName) actions.setClassTrainer(activeClass.id, e.target.value); }} />
                   </div>
                 ) : (
-                  activeClass.trainerName && <div className="text-xs tp-slate-text mb-3">Trainer: <span className="font-medium">{activeClass.trainerName}</span></div>
+                  activeClass.trainerName && <div className="text-xs tp-slate-text mb-1">Trainer: <span className="font-medium">{activeClass.trainerName}</span></div>
+                )}
+                {scope === "admin" ? (
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-xs tp-slate-text">Slots:</span>
+                    <input key={`${activeClass.id}-slots`} type="number" min={1} className="tp-input text-xs w-24" placeholder="Unlimited"
+                      defaultValue={activeClass.slots ?? ""} onBlur={e => { const v = e.target.value === "" ? null : Number(e.target.value); if (v !== activeClass.slots) actions.setClassSlots(activeClass.id, v); }} />
+                    <span className="text-xs tp-slate-text">{activeClass.enrollments.length} enrolled{activeClass.slots != null ? ` of ${activeClass.slots}` : ""}</span>
+                  </div>
+                ) : (
+                  <div className="text-xs tp-slate-text mb-3">{activeClass.enrollments.length} enrolled{activeClass.slots != null ? ` of ${activeClass.slots} slots` : ""}</div>
                 )}
               </div>
               {scope === "admin" && (
@@ -2142,17 +2155,22 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
           <div className="tp-card p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="font-semibold text-sm">Enrolled employees{scope === "manager" ? " (your team)" : ""}</div>
-              {enrollable.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <select className="tp-input w-auto text-xs" value={enrollId} onChange={e => setEnrollId(e.target.value)}>
-                    <option value="">Select employee…</option>
-                    {enrollable.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                  </select>
-                  <button onClick={() => { if (enrollId) { actions.enrollInClass(activeClass.id, enrollId, actorName); setEnrollId(""); } }}
-                    className="tp-btn-gold rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><Send size={12} /> Enroll</button>
-                </div>
-              )}
+              {(() => {
+                const isFull = scope === "manager" && activeClass.slots != null && activeClass.enrollments.length >= activeClass.slots;
+                if (isFull) return <span className="text-xs tp-red-text font-medium">Class is full — {activeClass.slots} of {activeClass.slots} slots taken</span>;
+                return enrollable.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <select className="tp-input w-auto text-xs" value={enrollId} onChange={e => setEnrollId(e.target.value)}>
+                      <option value="">Select employee…</option>
+                      {enrollable.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                    </select>
+                    <button onClick={async () => { if (enrollId) { const r = await actions.enrollInClass(activeClass.id, enrollId, actorName, scope); if (!r.ok) setEnrollError(r.error); else { setEnrollId(""); setEnrollError(""); } } }}
+                      className="tp-btn-gold rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><Send size={12} /> Enroll</button>
+                  </div>
+                );
+              })()}
             </div>
+            {enrollError && <div className="text-xs tp-red-text mb-2">{enrollError}</div>}
 
             {visibleEnrollments.length === 0 && <div className="text-xs tp-slate-text">No one enrolled yet.</div>}
 
@@ -2214,6 +2232,8 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
             <input type="date" className="tp-input" value={newClass.date} onChange={e => setNewClass({ ...newClass, date: e.target.value })} />
             <label className="text-xs tp-slate-text">Trainer (optional)</label>
             <input className="tp-input" placeholder="Who's delivering this training?" value={newClass.trainerName} onChange={e => setNewClass({ ...newClass, trainerName: e.target.value })} />
+            <label className="text-xs tp-slate-text">Number of slots (optional)</label>
+            <input type="number" min={1} className="tp-input" placeholder="Leave blank for unlimited" value={newClass.slots} onChange={e => setNewClass({ ...newClass, slots: e.target.value })} />
             <button onClick={() => createClass()} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-2">Create class</button>
           </div>
         </Modal>
@@ -3221,12 +3241,12 @@ function AmplifyTrainingAppInner() {
     },
     addClassTraining: async (c, actorName) => {
       const tempId = `temp-${Date.now()}`;
-      const optimistic = { id: tempId, name: c.name, date: c.date, quizEnabled: false, trainerName: c.trainerName || "", sessions: [], enrollments: [] };
+      const optimistic = { id: tempId, name: c.name, date: c.date, quizEnabled: false, trainerName: c.trainerName || "", slots: c.slots ?? null, sessions: [], enrollments: [] };
       setClassTrainings(prev => [...prev, optimistic]);
-      managers.forEach(m => notify(`New training class added: "${c.name}" on ${c.date}${c.trainerName ? ` — trainer: ${c.trainerName}` : ""} — you can enroll your team from the calendar.`, "manager", m.id));
+      managers.forEach(m => notify(`New training class added: "${c.name}" on ${c.date}${c.trainerName ? ` — trainer: ${c.trainerName}` : ""}${c.slots ? ` — ${c.slots} slots` : ""} — you can enroll your team from the calendar.`, "manager", m.id));
       try {
-        const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false, trainer_name: c.trainerName || null }]);
-        const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, trainerName: inserted.trainer_name || "", sessions: [], enrollments: [] };
+        const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false, trainer_name: c.trainerName || null, slots: c.slots ?? null }]);
+        const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, trainerName: inserted.trainer_name || "", slots: inserted.slots ?? null, sessions: [], enrollments: [] };
         setClassTrainings(prev => prev.map(cls => cls.id === tempId ? created : cls));
         return created;
       } catch (err) {
@@ -3251,9 +3271,17 @@ function AmplifyTrainingAppInner() {
       try { await sbUpdate("class_trainings", "id", classId, { trainer_name: trainerName || null }); }
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save trainer to database: ${err.message}` })); }
     },
-    enrollInClass: async (classId, employeeId, actorName) => {
+    setClassSlots: async (classId, slots) => {
+      setClassTrainings(classTrainings.map(c => c.id === classId ? { ...c, slots } : c));
+      try { await sbUpdate("class_trainings", "id", classId, { slots }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save slots to database: ${err.message}` })); }
+    },
+    enrollInClass: async (classId, employeeId, actorName, scope) => {
       const cls = classTrainings.find(c => c.id === classId);
       const emp = employees.find(e => e.id === employeeId);
+      if (scope === "manager" && cls?.slots != null && cls.enrollments.length >= cls.slots) {
+        return { ok: false, error: `"${cls.name}" is full — all ${cls.slots} slots are taken.` };
+      }
       try {
         const [inserted] = await sbInsert("class_enrollments", [{ class_id: classId, employee_id: employeeId, quiz_score: null }]);
         setClassTrainings(classTrainings.map(c => c.id === classId
@@ -3269,6 +3297,7 @@ function AmplifyTrainingAppInner() {
         notify(`${emp?.name} was enrolled in "${cls?.name}" by ${actorName}.`, "manager", emp.managerId);
       }
       logActivity(`${emp?.name} enrolled in "${cls?.name}" by ${actorName}.`, "enrollment", null, employeeId);
+      return { ok: true };
     },
     setClassQuizScore: async (classId, employeeId, score) => {
       setClassTrainings(classTrainings.map(c =>
