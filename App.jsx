@@ -207,6 +207,15 @@ async function sbUpdate(table, column, value, patch) {
 }
 
 const STORAGE_BUCKET = "training-files";
+const VAPID_PUBLIC_KEY = "BBZwuJ1tm-D5mDL6e-ovPNaHscoe45lrLcLccBYnbIr1l0GIx34crRrt7lAgEzFZWij7V3c1uVuab74UpU3K9Lo";
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
 async function sbUploadFile(file, folder = "modules") {
   const path = `${folder}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${path}`, {
@@ -270,7 +279,7 @@ function fromDbQuizQuestion(row) {
 }
 // --- Assignments ---
 function fromDbAssignment(row) {
-  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status, passThreshold: row.pass_threshold ?? 80, attempts: row.attempts || 0, activeSeconds: row.active_seconds || 0, assignedAt: row.assigned_at };
+  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status, passThreshold: row.pass_threshold ?? 80, attempts: row.attempts || 0, activeSeconds: row.active_seconds || 0, assignedAt: row.assigned_at, completedAt: row.completed_at };
 }
 // --- Class trainings (nested: sessions, enrollments, comments) ---
 function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
@@ -286,7 +295,7 @@ function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows)
 }
 // --- Notifications, feedback, endorsements, coaching ---
 function fromDbNotification(row) {
-  return { id: row.id, text: row.message, audience: row.audience || "admin", recipientId: row.recipient_id, date: row.created_at?.slice(0, 10) };
+  return { id: row.id, text: row.message, audience: row.audience || "admin", recipientId: row.recipient_id, date: row.created_at?.slice(0, 10), read: !!row.read };
 }
 function fromDbMonthlyFeedback(row) {
   return { id: row.id, managerId: row.manager_id, employeeId: row.employee_id, month: row.month_key, needsTraining: row.needs_training, comment: row.comment, submittedAt: row.submitted_at?.slice(0, 10) };
@@ -646,6 +655,24 @@ function AdminView({ state, actions }) {
             <StatCard icon={CheckCircle2} label="Completions" value={completedCount} accent="var(--green)" />
             <StatCard icon={Target} label="Avg Quiz Score" value={`${avgScore || 0}%`} accent="var(--gold)" />
             <StatCard icon={ClipboardCheck} label="Pending Approvals" value={state.pending.length} accent="var(--red)" />
+          </div>
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold mb-3 text-sm flex items-center gap-2"><Trophy size={15} className="tp-gold-text" /> Recent quiz results</div>
+            {[...state.assignments].filter(a => a.quizScore != null).sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0)).slice(0, 6).length === 0 && (
+              <div className="text-xs tp-slate-text">No quiz attempts yet.</div>
+            )}
+            <div className="grid gap-2">
+              {[...state.assignments].filter(a => a.quizScore != null).sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0)).slice(0, 6).map(a => {
+                const emp = state.employees.find(e => e.id === a.employeeId);
+                const mod = state.modules.find(m => m.id === a.moduleId);
+                return (
+                  <div key={a.id} className="flex items-center justify-between p-2 rounded-lg tp-ice-bg">
+                    <span className="text-sm">{emp?.name} <span className="tp-slate-text">— {mod?.title}</span></span>
+                    <span className={`text-xs font-semibold ${a.status === "completed" ? "tp-green-text" : "tp-red-text"}`}>{a.quizScore}% {a.status === "completed" ? "· Passed" : "· Below target"}</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
           <div className="tp-card p-4 mb-4">
             <div className="font-semibold mb-3 text-sm flex items-center gap-2"><AlertTriangle size={15} className="tp-red-text" /> Escalated for intervention</div>
@@ -1257,6 +1284,25 @@ function ManagerView({ state, managerId, actions }) {
       {tab === "team" && (
         <div>
           <CelebrationsBanner celebrations={state.celebrations} />
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold mb-3 text-sm flex items-center gap-2"><Trophy size={15} className="tp-gold-text" /> Recent quiz results — your team</div>
+            {state.assignments.filter(a => a.quizScore != null && team.some(t => t.id === a.employeeId)).length === 0 && (
+              <div className="text-xs tp-slate-text">No quiz attempts yet.</div>
+            )}
+            <div className="grid gap-2">
+              {[...state.assignments].filter(a => a.quizScore != null && team.some(t => t.id === a.employeeId))
+                .sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0)).slice(0, 6).map(a => {
+                const emp = state.employees.find(e => e.id === a.employeeId);
+                const mod = state.modules.find(m => m.id === a.moduleId);
+                return (
+                  <div key={a.id} className="flex items-center justify-between p-2 rounded-lg tp-ice-bg">
+                    <span className="text-sm">{emp?.name} <span className="tp-slate-text">— {mod?.title}</span></span>
+                    <span className={`text-xs font-semibold ${a.status === "completed" ? "tp-green-text" : "tp-red-text"}`}>{a.quizScore}% {a.status === "completed" ? "· Passed" : "· Below target"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
           <div className="grid gap-3">
           {team.map(e => {
             const badge = badgeForPoints(e.points);
@@ -2536,6 +2582,49 @@ function AmplifyTrainingAppInner() {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showInstallGuide, setShowInstallGuide] = useState(false);
   const [celebrations, setCelebrations] = useState([]);
+  const [pushStatus, setPushStatus] = useState("idle"); // idle | unsupported | subscribed | error
+  const [pushError, setPushError] = useState("");
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {
+        // Non-fatal — push just won't be available; rest of the app is unaffected.
+      });
+    }
+  }, []);
+
+  const subscribeToPush = async (personId) => {
+    setPushError("");
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setPushStatus("unsupported");
+      setPushError("Push notifications aren't supported on this browser. On iPhone, add this app to your Home Screen first and open it from there.");
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushError("Notification permission was not granted.");
+        return;
+      }
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+      const sub = subscription.toJSON();
+      try {
+        await sbInsert("push_subscriptions", [{ employee_id: personId, endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth }]);
+      } catch (err) {
+        // Duplicate subscription (already subscribed on this device) is fine, not a real error.
+        if (!err.message.includes("duplicate")) throw err;
+      }
+      setPushStatus("subscribed");
+    } catch (err) {
+      setPushStatus("error");
+      setPushError(`Couldn't enable push notifications: ${err.message}`);
+    }
+  };
+
 
   useEffect(() => {
     (async () => {
@@ -2633,11 +2722,18 @@ function AmplifyTrainingAppInner() {
   const myNotifications = role === "admin" ? notifications.filter(n => n.audience === "admin" || !n.audience)
     : role === "manager" ? notifications.filter(n => n.audience === "manager" && n.recipientId === loggedInManagerId)
     : notifications.filter(n => n.audience === "trainee" && n.recipientId === loggedInEmployeeId);
+  const unreadCount = myNotifications.filter(n => !n.read).length;
   const state = { employees, modules, assignments, pending, quizzes, classTrainings, notifications, monthlyFeedback, endorsements, coachingSessions, credentialsToShare, trainingRequests, reports, celebrations };
 
   const notify = (text, audience = "admin", recipientId = null) => {
-    setNotifications(prev => [{ id: Date.now() + Math.random(), text, audience, recipientId, date: new Date().toISOString().slice(0, 10) }, ...prev]);
-    sbInsert("notifications", [{ recipient_id: recipientId, message: text, audience }])
+    const tempId = Date.now() + Math.random();
+    setNotifications(prev => [{ id: tempId, text, audience, recipientId, date: new Date().toISOString().slice(0, 10), read: false }, ...prev]);
+    sbInsert("notifications", [{ recipient_id: recipientId, message: text, audience, read: false }])
+      .then(([inserted]) => {
+        // Reconcile the temporary local id with the real database id so
+        // "mark as read" (and anything else keyed by id) actually persists.
+        setNotifications(prev => prev.map(n => n.id === tempId ? { ...n, id: inserted.id } : n));
+      })
       .catch(err => setDataStatus(s => ({ ...s, error: `A notification didn't save to the database: ${err.message}` })));
 
     // Best-effort email alongside the in-app notification. Kept silent on
@@ -2654,6 +2750,13 @@ function AmplifyTrainingAppInner() {
           body: JSON.stringify({ to: person.email, subject: "New notification in Amplify", text }),
         }).catch(err => console.warn("Email notification failed to send:", err.message));
       }
+      // Best-effort push notification — same reasoning as email above: kept
+      // silent on failure since it's a bonus channel, not primary.
+      fetch("/api/send-push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: recipientId, title: "Amplify", body: text }),
+      }).catch(err => console.warn("Push notification failed to send:", err.message));
     }
   };
 
@@ -2774,9 +2877,11 @@ function AmplifyTrainingAppInner() {
           sbUpdate("employees", "id", employeeId, { points: emp.points + mod.points, streak: emp.streak + 1 })
             .catch(err => setDataStatus(s => ({ ...s, error: `Points didn't save to the database: ${err.message}` })));
         }
-        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed", attempts })
+        if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 100, status: "completed", attempts, completed_at: new Date().toISOString() })
           .catch(err => setDataStatus(s => ({ ...s, error: `Quiz completion didn't save to the database — refresh may lose this: ${err.message}` })));
         notify(`You passed the quiz for "${mod?.title}" — ${score}%! Module complete.`, "trainee", employeeId);
+        if (emp?.managerId) notify(`${emp.name} passed the quiz for "${mod?.title}" — ${score}%.`, "manager", emp.managerId);
+        notify(`${emp?.name} passed the quiz for "${mod?.title}" — ${score}%.`, "admin");
         logActivity(`${emp?.name || "Employee"} passed quiz for "${mod?.title}" — scored ${score}% (needed ${threshold}%), attempt ${attempts}.`, "quiz_completed", null, employeeId);
       } else {
         // Failed — restart the module (progress resets), but keep the attempt count.
@@ -2784,6 +2889,7 @@ function AmplifyTrainingAppInner() {
           ? { ...a, quizScore: score, progress: 0, status: "in_progress", attempts } : a));
         if (existing) sbUpdate("assignments", "id", existing.id, { quiz_score: score, progress: 0, status: "in_progress", attempts })
           .catch(err => setDataStatus(s => ({ ...s, error: `Quiz result didn't save to the database — refresh may lose this: ${err.message}` })));
+        if (emp?.managerId) notify(`${emp.name} scored ${score}% on "${mod?.title}" — below the ${threshold}% required. Attempt ${attempts} of 3.`, "manager", emp.managerId);
         logActivity(`${emp?.name || "Employee"} failed quiz for "${mod?.title}" — scored ${score}% (needed ${threshold}%), attempt ${attempts} of 3.`, "quiz_failed", null, employeeId);
 
         if (attempts >= 3) {
@@ -2987,6 +3093,16 @@ function AmplifyTrainingAppInner() {
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save escalation to database: ${err.message}` })); }
     },
     dismissCredential: (id) => setCredentialsToShare(credentialsToShare.filter(c => c.id !== id)),
+    markNotificationsRead: (ids) => {
+      if (ids.length === 0) return;
+      setNotifications(prev => prev.map(n => ids.includes(n.id) ? { ...n, read: true } : n));
+      ids.forEach(id => {
+        if (typeof id === "string") { // only real DB ids (skip local-fallback numeric/temp ids)
+          sbUpdate("notifications", "id", id, { read: true })
+            .catch(err => setDataStatus(s => ({ ...s, error: `Couldn't mark a notification as read: ${err.message}` })));
+        }
+      });
+    },
     requestTraining: async (title, reason, suggestedDate, managerId, managerNameStr) => {
       try {
         const [inserted] = await sbInsert("training_requests", [{ manager_id: managerId, title, reason, suggested_date: suggestedDate }]);
@@ -3172,10 +3288,17 @@ function AmplifyTrainingAppInner() {
             ))}
             {(role === "admin" || (role === "manager" && loggedInManagerId) || (role === "trainee" && loggedInEmployeeId)) && (
               <div className="relative ml-1">
-                <button onClick={() => setShowNotifications(!showNotifications)} className="relative p-2 rounded-lg hover:bg-gray-50">
+                <button onClick={() => {
+                  const nowOpen = !showNotifications;
+                  setShowNotifications(nowOpen);
+                  if (nowOpen) {
+                    const unreadIds = myNotifications.filter(n => !n.read).map(n => n.id);
+                    actions.markNotificationsRead(unreadIds);
+                  }
+                }} className="relative p-2 rounded-lg hover:bg-gray-50">
                   <Sparkles size={15} className="tp-navy-text" />
-                  {myNotifications.length > 0 && (
-                    <span className="absolute -top-1 -right-1 tp-red-bg text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center" style={{ background: "var(--red)" }}>{myNotifications.length}</span>
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 tp-red-bg text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center" style={{ background: "var(--red)" }}>{unreadCount}</span>
                   )}
                 </button>
                 {showNotifications && (
@@ -3184,7 +3307,9 @@ function AmplifyTrainingAppInner() {
                     {myNotifications.length === 0 && <div className="text-xs tp-slate-text">No notifications.</div>}
                     <div className="grid gap-2 max-h-64 overflow-y-auto tp-scrollbar">
                       {myNotifications.map(n => (
-                        <div key={n.id} className="text-xs tp-ice-bg rounded-md p-2">{n.text}<div className="tp-slate-text mt-1">{n.date}</div></div>
+                        <div key={n.id} className="text-xs rounded-md p-2" style={{ background: n.read ? "var(--ice)" : "#0071CE12", borderLeft: n.read ? "none" : "2px solid var(--blue)" }}>
+                          {n.text}<div className="tp-slate-text mt-1">{n.date}</div>
+                        </div>
                       ))}
                     </div>
                   </div>
@@ -3199,12 +3324,19 @@ function AmplifyTrainingAppInner() {
             <EmployeeLoginGate employees={employees} onSuccess={(id) => { setLoggedInEmployeeId(id); saveSession({ type: "trainee", id }); logActivity(`${employees.find(e => e.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} />
           )}
           {role === "trainee" && loggedInEmployeeId && (
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Logged in as {employees.find(e => e.id === loggedInEmployeeId)?.name}</span>
-              <div className="flex items-center gap-3">
-                <button onClick={() => setShowChangePassword(true)} className="text-xs tp-gold-text font-medium">Change password</button>
-                <button onClick={() => { setLoggedInEmployeeId(null); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
+            <div className="mb-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Logged in as {employees.find(e => e.id === loggedInEmployeeId)?.name}</span>
+                <div className="flex items-center gap-3">
+                  {pushStatus !== "subscribed" && (
+                    <button onClick={() => subscribeToPush(loggedInEmployeeId)} className="text-xs tp-gold-text font-medium">Enable push notifications</button>
+                  )}
+                  {pushStatus === "subscribed" && <span className="text-xs tp-green-text font-medium">Push enabled ✓</span>}
+                  <button onClick={() => setShowChangePassword(true)} className="text-xs tp-gold-text font-medium">Change password</button>
+                  <button onClick={() => { setLoggedInEmployeeId(null); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
+                </div>
               </div>
+              {pushError && <div className="text-xs tp-red-text mt-1 text-right">{pushError}</div>}
             </div>
           )}
 
@@ -3212,12 +3344,19 @@ function AmplifyTrainingAppInner() {
             <ManagerLoginGate managers={managers} onSuccess={(id) => { setLoggedInManagerId(id); saveSession({ type: "manager", id }); logActivity(`${managers.find(m => m.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} />
           )}
           {role === "manager" && loggedInManagerId && (
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Logged in as {managers.find(m => m.id === loggedInManagerId)?.name}</span>
-              <div className="flex items-center gap-3">
-                <button onClick={() => setShowChangePassword(true)} className="text-xs tp-gold-text font-medium">Change password</button>
-                <button onClick={() => { setLoggedInManagerId(null); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
+            <div className="mb-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs" style={{ color: "rgba(255,255,255,0.75)" }}>Logged in as {managers.find(m => m.id === loggedInManagerId)?.name}</span>
+                <div className="flex items-center gap-3">
+                  {pushStatus !== "subscribed" && (
+                    <button onClick={() => subscribeToPush(loggedInManagerId)} className="text-xs tp-gold-text font-medium">Enable push notifications</button>
+                  )}
+                  {pushStatus === "subscribed" && <span className="text-xs tp-green-text font-medium">Push enabled ✓</span>}
+                  <button onClick={() => setShowChangePassword(true)} className="text-xs tp-gold-text font-medium">Change password</button>
+                  <button onClick={() => { setLoggedInManagerId(null); clearSession(); }} className="text-xs tp-gold-text font-medium">Log out</button>
+                </div>
               </div>
+              {pushError && <div className="text-xs tp-red-text mt-1 text-right">{pushError}</div>}
             </div>
           )}
 
