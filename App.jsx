@@ -284,7 +284,7 @@ function fromDbAssignment(row) {
 // --- Class trainings (nested: sessions, enrollments, comments) ---
 function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
   return classRows.map(c => ({
-    id: c.id, name: c.name, date: c.class_date, quizEnabled: c.quiz_enabled,
+    id: c.id, name: c.name, date: c.class_date, quizEnabled: c.quiz_enabled, trainerName: c.trainer_name || "",
     sessions: sessionRows.filter(s => s.class_id === c.id).map(s => ({ date: s.session_date, hours: Number(s.hours) })),
     enrollments: enrollRows.filter(e => e.class_id === c.id).map(e => ({
       employeeId: e.employee_id, quizScore: e.quiz_score,
@@ -1609,7 +1609,8 @@ function TraineeClassView({ state, employeeId }) {
       {activeClass && (
         <div className="tp-card p-4">
           <div className="font-semibold tp-display text-lg mb-1">{activeClass.name}</div>
-          <div className="text-xs tp-slate-text mb-3">Class date: {activeClass.date}</div>
+          <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}</div>
+          {activeClass.trainerName && <div className="text-xs tp-slate-text mb-3">Trainer: <span className="font-medium">{activeClass.trainerName}</span></div>}
           <div className="text-xs font-medium tp-slate-text mb-1">Hours logged</div>
           <div className="flex flex-wrap gap-2 mb-3">
             {activeClass.sessions.length === 0 && <span className="text-xs tp-slate-text">No sessions logged yet.</span>}
@@ -1954,7 +1955,7 @@ function TrainingCalendar({ classTrainings, onSelectClass, onAddDay, canAdd }) {
 function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
   const [classTab, setClassTab] = useState(null);
   const [showNewClass, setShowNewClass] = useState(false);
-  const [newClass, setNewClass] = useState({ name: "", date: "" });
+  const [newClass, setNewClass] = useState({ name: "", date: "", trainerName: "" });
   const [enrollId, setEnrollId] = useState("");
   const [sessionDraft, setSessionDraft] = useState({ date: "", hours: "" });
   const [commentDraft, setCommentDraft] = useState({});
@@ -1974,9 +1975,10 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
 
   const createClass = async (prefillDate) => {
     if (!newClass.name.trim() || !(newClass.date || prefillDate)) return;
-    setNewClass({ name: "", date: "" });
+    const trainerName = newClass.trainerName;
+    setNewClass({ name: "", date: "", trainerName: "" });
     setShowNewClass(false);
-    const created = await actions.addClassTraining({ name: newClass.name, date: prefillDate || newClass.date }, actorName);
+    const created = await actions.addClassTraining({ name: newClass.name, date: prefillDate || newClass.date, trainerName }, actorName);
     setClassTab(created.id);
   };
 
@@ -2054,7 +2056,16 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
             <div className="flex items-center justify-between">
               <div>
                 <div className="font-semibold tp-display text-lg">{activeClass.name}</div>
-                <div className="text-xs tp-slate-text mb-3">Class date: {activeClass.date}</div>
+                <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}</div>
+                {scope === "admin" ? (
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-xs tp-slate-text">Trainer:</span>
+                    <input key={activeClass.id} className="tp-input text-xs w-auto" placeholder="Add trainer name"
+                      defaultValue={activeClass.trainerName} onBlur={e => { if (e.target.value !== activeClass.trainerName) actions.setClassTrainer(activeClass.id, e.target.value); }} />
+                  </div>
+                ) : (
+                  activeClass.trainerName && <div className="text-xs tp-slate-text mb-3">Trainer: <span className="font-medium">{activeClass.trainerName}</span></div>
+                )}
               </div>
               {scope === "admin" && (
                 <button onClick={() => { if (window.confirm(`Remove "${activeClass.name}" from the calendar entirely? Everyone enrolled will be notified. This can't be undone.`)) { actions.deleteClassTraining(activeClass.id, actorName); setClassTab(null); } }}
@@ -2156,6 +2167,8 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
             <input className="tp-input" placeholder="Class name" value={newClass.name} onChange={e => setNewClass({ ...newClass, name: e.target.value })} />
             <label className="text-xs tp-slate-text">Date</label>
             <input type="date" className="tp-input" value={newClass.date} onChange={e => setNewClass({ ...newClass, date: e.target.value })} />
+            <label className="text-xs tp-slate-text">Trainer (optional)</label>
+            <input className="tp-input" placeholder="Who's delivering this training?" value={newClass.trainerName} onChange={e => setNewClass({ ...newClass, trainerName: e.target.value })} />
             <button onClick={() => createClass()} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium mt-2">Create class</button>
           </div>
         </Modal>
@@ -3163,12 +3176,12 @@ function AmplifyTrainingAppInner() {
     },
     addClassTraining: async (c, actorName) => {
       const tempId = `temp-${Date.now()}`;
-      const optimistic = { id: tempId, name: c.name, date: c.date, quizEnabled: false, sessions: [], enrollments: [] };
+      const optimistic = { id: tempId, name: c.name, date: c.date, quizEnabled: false, trainerName: c.trainerName || "", sessions: [], enrollments: [] };
       setClassTrainings(prev => [...prev, optimistic]);
-      managers.forEach(m => notify(`New training class added: "${c.name}" on ${c.date} — you can enroll your team from the calendar.`, "manager", m.id));
+      managers.forEach(m => notify(`New training class added: "${c.name}" on ${c.date}${c.trainerName ? ` — trainer: ${c.trainerName}` : ""} — you can enroll your team from the calendar.`, "manager", m.id));
       try {
-        const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false }]);
-        const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, sessions: [], enrollments: [] };
+        const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false, trainer_name: c.trainerName || null }]);
+        const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, trainerName: inserted.trainer_name || "", sessions: [], enrollments: [] };
         setClassTrainings(prev => prev.map(cls => cls.id === tempId ? created : cls));
         return created;
       } catch (err) {
@@ -3187,6 +3200,11 @@ function AmplifyTrainingAppInner() {
       setClassTrainings(classTrainings.map(c => c.id === classId ? { ...c, quizEnabled: enabled } : c));
       try { await sbUpdate("class_trainings", "id", classId, { quiz_enabled: enabled }); }
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save quiz toggle to database: ${err.message}` })); }
+    },
+    setClassTrainer: async (classId, trainerName) => {
+      setClassTrainings(classTrainings.map(c => c.id === classId ? { ...c, trainerName } : c));
+      try { await sbUpdate("class_trainings", "id", classId, { trainer_name: trainerName || null }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save trainer to database: ${err.message}` })); }
     },
     enrollInClass: async (classId, employeeId, actorName) => {
       const cls = classTrainings.find(c => c.id === classId);
