@@ -760,6 +760,9 @@ function AdminView({ state, actions }) {
                   </label>
                 </div>
                 <div className="flex items-center gap-3">
+                  <button onClick={() => { if (window.confirm(`Delete "${m.title}" entirely? This removes the module, its quiz, its files, and everyone's assignment to it. This can't be undone.`)) actions.deleteModule(m.id); }} className="text-xs tp-red-text hover:underline">
+                    Delete module
+                  </button>
                   {m.hasQuiz && (
                     <button onClick={() => { if (window.confirm(`Delete the quiz for "${m.title}"?`)) actions.deleteQuiz(m.id); }} className="text-xs tp-red-text hover:underline">
                       Delete quiz
@@ -3054,21 +3057,37 @@ function AmplifyTrainingAppInner() {
       }
     },
     deleteQuiz: async (moduleId) => {
-      setQuizzes(prev => ({ ...prev, [moduleId]: [] }));
-      setModules(modules.map(m => m.id === moduleId ? { ...m, hasQuiz: false } : m));
       try {
         await sbDelete("quiz_questions", "module_id", moduleId);
         await sbUpdate("modules", "id", moduleId, { has_quiz: false });
-      } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete quiz from database: ${err.message}` })); }
-      logActivity(`Quiz deleted for a module.`, "quiz_deleted", null, null);
+        setQuizzes(prev => ({ ...prev, [moduleId]: [] }));
+        setModules(modules.map(m => m.id === moduleId ? { ...m, hasQuiz: false } : m));
+        logActivity(`Quiz deleted for a module.`, "quiz_deleted", null, null);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't delete quiz from database: ${err.message}` }));
+      }
+    },
+    deleteModule: async (moduleId) => {
+      const mod = modules.find(m => m.id === moduleId);
+      try {
+        await sbDelete("modules", "id", moduleId);
+        setModules(modules.filter(m => m.id !== moduleId));
+        setQuizzes(prev => { const next = { ...prev }; delete next[moduleId]; return next; });
+        setAssignments(prev => prev.filter(a => a.moduleId !== moduleId));
+        logActivity(`Module "${mod?.title || "Untitled"}" was deleted.`, "module_deleted", null, null);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't delete "${mod?.title || "this module"}": ${err.message}` }));
+      }
     },
     deleteAttachment: async (moduleId, attachment) => {
-      setModules(modules.map(m => m.id === moduleId ? { ...m, attachments: m.attachments.filter(a => a !== attachment) } : m));
       try {
         if (attachment.id) await sbDelete("module_attachments", "id", attachment.id);
         if (attachment.path) await sbDeleteFile(attachment.path);
-      } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete file from database: ${err.message}` })); }
-      logActivity(`Deleted material "${attachment.name}".`, "material_deleted", null, null);
+        setModules(modules.map(m => m.id === moduleId ? { ...m, attachments: m.attachments.filter(a => a !== attachment) } : m));
+        logActivity(`Deleted material "${attachment.name}".`, "material_deleted", null, null);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't delete "${attachment.name}": ${err.message}` }));
+      }
     },
     addAttachmentToModule: async (moduleId, file) => {
       try {
@@ -3094,21 +3113,26 @@ function AmplifyTrainingAppInner() {
       logActivity(`Celebration posted: "${title}".`, "celebration", null, null);
     },
     deleteCelebration: async (id) => {
-      setCelebrations(celebrations.filter(c => c.id !== id));
-      try { await sbDelete("celebrations", "id", id); }
-      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete celebration from database: ${err.message}` })); }
+      try {
+        await sbDelete("celebrations", "id", id);
+        setCelebrations(celebrations.filter(c => c.id !== id));
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't delete celebration from database: ${err.message}` }));
+      }
     },
     deleteReport: async (id) => {
       const report = reports.find(r => r.id === id);
-      setReports(reports.filter(r => r.id !== id));
       try {
         await sbDelete("reports", "id", id);
         if (report?.fileUrl) {
           const path = report.fileUrl.split(`/${STORAGE_BUCKET}/`)[1];
           if (path) await sbDeleteFile(path);
         }
-      } catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't delete report file: ${err.message}` })); }
-      logActivity(`Deleted report "${report?.fileName}".`, "material_deleted", null, null);
+        setReports(reports.filter(r => r.id !== id));
+        logActivity(`Deleted report "${report?.fileName}".`, "material_deleted", null, null);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't delete "${report?.fileName || "this report"}": ${err.message}` }));
+      }
     },
   };
 
