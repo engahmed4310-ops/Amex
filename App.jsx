@@ -990,7 +990,7 @@ function AdminView({ state, actions }) {
             <table className="w-full text-sm">
               <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
                 <th className="p-3">Employee</th><th className="p-3">Department</th><th className="p-3">Module</th><th className="p-3">Progress</th>
-                <th className="p-3">Time (min)</th><th className="p-3">Quiz Score</th>
+                <th className="p-3">Time (min)</th><th className="p-3">Quiz Score</th><th className="p-3"></th>
               </tr></thead>
               <tbody>
                 {state.assignments.filter(a => {
@@ -1007,6 +1007,10 @@ function AdminView({ state, actions }) {
                       <td className="p-3 w-32"><ProgressBar value={a.progress} /></td>
                       <td className="p-3">{a.timeSpentMin}</td>
                       <td className="p-3">{a.quizScore != null ? `${a.quizScore}%` : "—"}</td>
+                      <td className="p-3">
+                        <button onClick={() => { if (window.confirm(`Remove "${mod?.title}" from ${emp?.name}'s training list?`)) actions.removeAssignment(a.id, "Admin"); }}
+                          className="text-xs tp-red-text hover:underline">Remove</button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -1400,10 +1404,14 @@ function ManagerView({ state, managerId, actions }) {
                     <td className="p-3">{formatActiveTime(a.activeSeconds, a.timeSpentMin)}</td>
                     <td className="p-3">{a.quizScore != null ? `${a.quizScore}%` : "—"}</td>
                     <td className="p-3">
-                      {a.status !== "completed" && (
-                        <button onClick={() => actions.sendReminder(emp?.id, `Reminder from ${myName}: please finish "${mod?.title}".`)}
-                          className="text-xs tp-blue-text hover:underline">Send reminder</button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {a.status !== "completed" && (
+                          <button onClick={() => actions.sendReminder(emp?.id, `Reminder from ${myName}: please finish "${mod?.title}".`)}
+                            className="text-xs tp-blue-text hover:underline">Send reminder</button>
+                        )}
+                        <button onClick={() => { if (window.confirm(`Remove "${mod?.title}" from ${emp?.name}'s training list?`)) actions.removeAssignment(a.id, myName); }}
+                          className="text-xs tp-red-text hover:underline">Remove</button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -1971,6 +1979,8 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
                             <span className="text-xs font-semibold">{en.quizScore != null ? `${en.quizScore}%` : "Not scored yet"}</span>
                           )
                         )}
+                        <button onClick={() => { if (window.confirm(`Remove ${emp?.name} from "${activeClass.name}"?`)) actions.removeEnrollment(activeClass.id, en.employeeId, actorName); }}
+                          className="text-xs tp-red-text hover:underline">Remove</button>
                       </div>
                     </div>
                     <div className="text-xs tp-slate-text mb-1">Comments</div>
@@ -3248,6 +3258,33 @@ function AmplifyTrainingAppInner() {
         logActivity(`Deleted report "${report?.fileName}".`, "material_deleted", null, null);
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't delete "${report?.fileName || "this report"}": ${err.message}` }));
+      }
+    },
+    removeEnrollment: async (classId, employeeId, actorName) => {
+      const cls = classTrainings.find(c => c.id === classId);
+      const enrollment = cls?.enrollments.find(en => en.employeeId === employeeId);
+      const emp = employees.find(e => e.id === employeeId);
+      try {
+        if (enrollment?._enrollmentDbId) await sbDelete("class_enrollments", "id", enrollment._enrollmentDbId);
+        setClassTrainings(classTrainings.map(c => c.id === classId
+          ? { ...c, enrollments: c.enrollments.filter(en => en.employeeId !== employeeId) } : c));
+        notify(`You were removed from "${cls?.name}" by ${actorName}.`, "trainee", employeeId);
+        logActivity(`${emp?.name || "Employee"} removed from "${cls?.name}" by ${actorName}.`, "enrollment_removed", null, employeeId);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't remove ${emp?.name || "this person"} from the class: ${err.message}` }));
+      }
+    },
+    removeAssignment: async (assignmentId, actorName) => {
+      const a = assignments.find(x => x.id === assignmentId);
+      const emp = employees.find(e => e.id === a?.employeeId);
+      const mod = modules.find(m => m.id === a?.moduleId);
+      try {
+        await sbDelete("assignments", "id", assignmentId);
+        setAssignments(assignments.filter(x => x.id !== assignmentId));
+        if (a?.employeeId) notify(`"${mod?.title}" was removed from your training list by ${actorName}.`, "trainee", a.employeeId);
+        logActivity(`Removed "${mod?.title}" assignment from ${emp?.name || "an employee"} — by ${actorName}.`, "assignment_removed", null, a?.employeeId);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't remove this assignment: ${err.message}` }));
       }
     },
   };
