@@ -269,7 +269,7 @@ function fromDbPending(row, deptIdToName) {
 
 // --- Modules & quizzes ---
 function fromDbModule(row) {
-  return { id: row.id, title: row.title, desc: row.description || "", points: row.points, mandatory: row.mandatory, hasQuiz: row.has_quiz, attachments: [], createdAt: row.created_at };
+  return { id: row.id, title: row.title, desc: row.description || "", points: row.points, mandatory: row.mandatory, hasQuiz: row.has_quiz, attachments: [], createdAt: row.created_at, archived: !!row.archived };
 }
 function fromDbAttachment(row) {
   return { id: row.id, name: row.file_name, url: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${row.storage_path}`, path: row.storage_path, type: row.file_type, size: row.file_size_bytes, moduleId: row.module_id };
@@ -279,7 +279,7 @@ function fromDbQuizQuestion(row) {
 }
 // --- Assignments ---
 function fromDbAssignment(row) {
-  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status, passThreshold: row.pass_threshold ?? 80, attempts: row.attempts || 0, activeSeconds: row.active_seconds || 0, assignedAt: row.assigned_at, completedAt: row.completed_at };
+  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status, passThreshold: row.pass_threshold ?? 80, attempts: row.attempts || 0, activeSeconds: row.active_seconds || 0, assignedAt: row.assigned_at, completedAt: row.completed_at, dueDate: row.due_date };
 }
 // --- Class trainings (nested: sessions, enrollments, comments) ---
 function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
@@ -304,7 +304,7 @@ function fromDbEndorsement(row) {
   return { employeeId: row.employee_id, managerId: row.manager_id, month: row.month_key };
 }
 function fromDbCoaching(row) {
-  return { id: row.id, employeeId: row.employee_id, managerId: row.manager_id, category: row.category, notes: row.notes, escalated: row.escalated, date: row.session_date };
+  return { id: row.id, employeeId: row.employee_id, managerId: row.manager_id, category: row.category, notes: row.notes, escalated: row.escalated, resolved: !!row.resolved, date: row.session_date };
 }
 function fromDbTrainingRequest(row) {
   return { id: row.id, managerId: row.manager_id, title: row.title, reason: row.reason, suggestedDate: row.suggested_date, status: row.status, requestedAt: row.requested_at?.slice(0, 10) };
@@ -404,6 +404,15 @@ function AdminView({ state, actions }) {
   const [qaLoading, setQaLoading] = useState(false);
   const [qaError, setQaError] = useState("");
   const [addFileModuleId, setAddFileModuleId] = useState(null);
+  const [adminAssignEmpIds, setAdminAssignEmpIds] = useState([]);
+  const [adminAssignMod, setAdminAssignMod] = useState("");
+  const [adminAssignPassThreshold, setAdminAssignPassThreshold] = useState(80);
+  const [adminAssignDueDate, setAdminAssignDueDate] = useState("");
+  const [adminAssignDeptFilter, setAdminAssignDeptFilter] = useState("all");
+  const [adminAssignSearch, setAdminAssignSearch] = useState("");
+  const [adminAssigning, setAdminAssigning] = useState(false);
+  const [adminAssignFeedback, setAdminAssignFeedback] = useState(null);
+  const [resetPasswordTarget, setResetPasswordTarget] = useState(null);
 
   const loadQuestionAnalysis = async (moduleId) => {
     if (!moduleId) { setQaResults([]); return; }
@@ -637,6 +646,7 @@ function AdminView({ state, actions }) {
       <Tabs active={tab} onChange={setTab} tabs={[
         { key: "overview", label: "Overview", icon: LayoutDashboard },
         { key: "content", label: "Content & Quizzes", icon: BookOpen },
+        { key: "assign", label: "Assign Training", icon: Send },
         { key: "classes", label: "In-Class Training", icon: Users },
         { key: "approvals", label: "Approvals", icon: ClipboardCheck },
         { key: "users", label: "Users", icon: Users },
@@ -676,14 +686,17 @@ function AdminView({ state, actions }) {
           </div>
           <div className="tp-card p-4 mb-4">
             <div className="font-semibold mb-3 text-sm flex items-center gap-2"><AlertTriangle size={15} className="tp-red-text" /> Escalated for intervention</div>
-            {state.coachingSessions.filter(s => s.escalated).length === 0 && <div className="text-xs tp-slate-text">No open escalations.</div>}
+            {state.coachingSessions.filter(s => s.escalated && !s.resolved).length === 0 && <div className="text-xs tp-slate-text">No open escalations.</div>}
             <div className="grid gap-2">
-              {state.coachingSessions.filter(s => s.escalated).map(s => {
+              {state.coachingSessions.filter(s => s.escalated && !s.resolved).map(s => {
                 const emp = state.employees.find(e => e.id === s.employeeId);
                 const mgr = managers.find(m => m.id === s.managerId);
                 return (
                   <div key={s.id} className="p-2 rounded-lg" style={{ background: "#D6534A10" }}>
-                    <div className="text-sm font-medium flex items-center gap-2">{emp?.name} <span className="text-xs tp-slate-text">· {s.category} · flagged by {mgr?.name}</span></div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-medium flex items-center gap-2">{emp?.name} <span className="text-xs tp-slate-text">· {s.category} · flagged by {mgr?.name}</span></div>
+                      <button onClick={() => actions.resolveEscalation(s.id)} className="text-xs tp-green-text font-medium hover:underline whitespace-nowrap">Mark resolved</button>
+                    </div>
                     <div className="text-xs tp-slate-text mt-1">{s.notes}</div>
                   </div>
                 );
@@ -756,11 +769,12 @@ function AdminView({ state, actions }) {
             <PlusCircle size={16} /> New training module (manual)
           </button>
           <div className="grid gap-3">
-            {state.modules.map(m => (
-              <div key={m.id} className="tp-card p-4 flex items-center justify-between">
+            {[...state.modules].sort((a, b) => (a.archived === b.archived ? 0 : a.archived ? 1 : -1)).map(m => (
+              <div key={m.id} className="tp-card p-4 flex items-center justify-between" style={{ opacity: m.archived ? 0.6 : 1 }}>
                 <div>
                   <div className="font-semibold flex items-center gap-2">{m.title}
                     {m.mandatory && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-red-text" style={{ background: "#D6534A18" }}>Mandatory</span>}
+                    {m.archived && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full tp-slate-text" style={{ background: "#5B6B8C18" }}>Archived</span>}
                   </div>
                   <div className="text-sm tp-slate-text">{m.desc}</div>
                   <div className="text-xs tp-gold-text font-medium mt-1 flex items-center gap-1"><Star size={12} /> {m.points} pts</div>
@@ -787,9 +801,16 @@ function AdminView({ state, actions }) {
                   </label>
                 </div>
                 <div className="flex items-center gap-3">
-                  <button onClick={() => { if (window.confirm(`Delete "${m.title}" entirely? This removes the module, its quiz, its files, and everyone's assignment to it. This can't be undone.`)) actions.deleteModule(m.id); }} className="text-xs tp-red-text hover:underline">
-                    Delete module
-                  </button>
+                  <div className="flex flex-col items-end gap-1">
+                    {m.archived ? (
+                      <button onClick={() => actions.archiveModule(m.id, false)} className="text-xs tp-blue-text hover:underline">Unarchive</button>
+                    ) : (
+                      <button onClick={() => { if (window.confirm(`Archive "${m.title}"? It'll disappear from the library and can't be newly assigned, but everyone's existing progress and quiz history stays intact. You can unarchive it anytime.`)) actions.archiveModule(m.id, true); }} className="text-xs tp-gold-text hover:underline">Archive</button>
+                    )}
+                    <button onClick={() => { if (window.confirm(`Permanently delete "${m.title}"? This removes the module, its quiz, its files, and everyone's assignment/history for it. This can't be undone — consider Archive instead if you just want it hidden.`)) actions.deleteModule(m.id); }} className="text-[11px] tp-red-text hover:underline">
+                      Delete permanently
+                    </button>
+                  </div>
                   {m.hasQuiz && (
                     <button onClick={() => { if (window.confirm(`Delete the quiz for "${m.title}"?`)) actions.deleteQuiz(m.id); }} className="text-xs tp-red-text hover:underline">
                       Delete quiz
@@ -803,6 +824,78 @@ function AdminView({ state, actions }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {tab === "assign" && (
+        <div className="tp-card p-4 grid gap-3 max-w-md">
+          {(() => {
+            const allTrainees = state.employees.filter(e => e.role === "trainee");
+            const filtered = allTrainees.filter(e =>
+              (adminAssignDeptFilter === "all" || e.dept === adminAssignDeptFilter) &&
+              e.name.toLowerCase().includes(adminAssignSearch.trim().toLowerCase())
+            );
+            return allTrainees.length === 0 ? (
+              <div className="text-sm tp-slate-text">No trainees registered yet.</div>
+            ) : state.modules.filter(m => !m.archived).length === 0 ? (
+              <div className="text-sm tp-slate-text">No active training modules exist yet — create one first.</div>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <select className="tp-input w-auto text-sm" value={adminAssignDeptFilter} onChange={e => setAdminAssignDeptFilter(e.target.value)}>
+                    <option value="all">All departments</option>
+                    {LIVE_DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+                  </select>
+                  <input className="tp-input flex-1" placeholder="Search by name…" value={adminAssignSearch} onChange={e => setAdminAssignSearch(e.target.value)} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs tp-slate-text">Employees ({adminAssignEmpIds.length} selected)</label>
+                  <button onClick={() => setAdminAssignEmpIds(filtered.every(e => adminAssignEmpIds.includes(e.id)) ? adminAssignEmpIds.filter(id => !filtered.some(e => e.id === id)) : [...new Set([...adminAssignEmpIds, ...filtered.map(e => e.id)])])}
+                    className="text-xs tp-blue-text font-medium">{filtered.every(e => adminAssignEmpIds.includes(e.id)) && filtered.length > 0 ? "Deselect shown" : "Select all shown"}</button>
+                </div>
+                <div className="grid gap-1 p-2 rounded-lg tp-ice-bg max-h-52 overflow-y-auto tp-scrollbar">
+                  {filtered.length === 0 && <div className="text-xs tp-slate-text">No matches.</div>}
+                  {filtered.map(e => (
+                    <label key={e.id} className="flex items-center gap-2 text-sm py-0.5">
+                      <input type="checkbox" checked={adminAssignEmpIds.includes(e.id)}
+                        onChange={ev => setAdminAssignEmpIds(ev.target.checked ? [...adminAssignEmpIds, e.id] : adminAssignEmpIds.filter(id => id !== e.id))} />
+                      {e.name} <span className="tp-slate-text text-xs">· {e.dept}</span>
+                    </label>
+                  ))}
+                </div>
+                <label className="text-xs tp-slate-text">Training module</label>
+                <select className="tp-input" value={adminAssignMod} onChange={e => setAdminAssignMod(e.target.value)}>
+                  <option value="" disabled>Select a module…</option>
+                  {[...state.modules].filter(m => !m.archived).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).map(m => <option key={m.id} value={m.id}>{m.title}{m.hasQuiz ? " (has quiz)" : ""}</option>)}
+                </select>
+                <label className="text-xs tp-slate-text">Passing score required</label>
+                <input type="number" min={0} max={100} className="tp-input" value={adminAssignPassThreshold} onChange={e => setAdminAssignPassThreshold(Number(e.target.value))} />
+                <label className="text-xs tp-slate-text">Due date (optional)</label>
+                <input type="date" className="tp-input" value={adminAssignDueDate} onChange={e => setAdminAssignDueDate(e.target.value)} />
+                <button onClick={async () => {
+                  setAdminAssignFeedback(null); setAdminAssigning(true);
+                  const results = await Promise.all(adminAssignEmpIds.map(id => actions.assign(id, adminAssignMod, "Admin", adminAssignPassThreshold, adminAssignDueDate || null)));
+                  const okCount = results.filter(r => r.ok).length;
+                  const failMsgs = results.filter(r => !r.ok).map(r => r.error);
+                  setAdminAssignFeedback({ okCount, total: results.length, failMsgs, moduleTitle: state.modules.find(m => m.id === adminAssignMod)?.title });
+                  setAdminAssigning(false);
+                }} disabled={adminAssignEmpIds.length === 0 || !adminAssignMod || adminAssigning}
+                  className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2 justify-center disabled:opacity-40">
+                  <Send size={15} /> {adminAssigning ? "Assigning…" : `Assign to ${adminAssignEmpIds.length || ""} ${adminAssignEmpIds.length === 1 ? "person" : "people"}`}
+                </button>
+                {adminAssignFeedback && (
+                  <div className="grid gap-1">
+                    {adminAssignFeedback.okCount > 0 && (
+                      <div className="text-xs tp-green-text font-medium flex items-center gap-1"><CheckCircle2 size={13} /> Assigned "{adminAssignFeedback.moduleTitle}" to {adminAssignFeedback.okCount} of {adminAssignFeedback.total}.</div>
+                    )}
+                    {adminAssignFeedback.failMsgs.map((msg, i) => (
+                      <div key={i} className="text-xs tp-red-text font-medium flex items-center gap-1"><AlertTriangle size={13} /> {msg}</div>
+                    ))}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -900,6 +993,12 @@ function AdminView({ state, actions }) {
             <div className="font-semibold text-sm mb-2 flex items-center gap-2"><Users size={15} className="tp-blue-text" /> All registered, approved users</div>
             <input className="tp-input" placeholder="Search by name or email…" value={userSearch} onChange={e => setUserSearch(e.target.value)} />
           </div>
+          {resetPasswordTarget && (
+            <div className="tp-card p-3 mb-4 flex items-center justify-between" style={{ background: "#1F9D6410" }}>
+              <span className="text-xs tp-green-text font-medium">Password reset for {resetPasswordTarget}. Emailed to them if they have an email on file — if not, find the new password in Approvals → New login passwords.</span>
+              <button onClick={() => setResetPasswordTarget(null)}><X size={13} className="tp-slate-text" /></button>
+            </div>
+          )}
           <div className="tp-card overflow-x-auto tp-scrollbar">
             <table className="w-full text-sm">
               <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
@@ -933,8 +1032,12 @@ function AdminView({ state, actions }) {
                         ) : "—"}
                       </td>
                       <td className="p-3">
-                        <button onClick={() => { if (window.confirm(`Delete ${e.name} (${e.email || "no email on file"})? This removes their account and all their training records.`)) actions.deleteUser(e.id); }}
-                          className="text-xs tp-red-text hover:underline">Delete</button>
+                        <div className="flex items-center gap-3">
+                          <button onClick={async () => { if (window.confirm(`Reset ${e.name}'s password? A new one will be generated and emailed to them if they have an email on file.`)) { const r = await actions.resetPasswordByAdmin(e.id); setResetPasswordTarget(r.ok ? e.name : null); } }}
+                            className="text-xs tp-blue-text hover:underline">Reset password</button>
+                          <button onClick={() => { if (window.confirm(`Delete ${e.name} (${e.email || "no email on file"})? This removes their account and all their training records.`)) actions.deleteUser(e.id); }}
+                            className="text-xs tp-red-text hover:underline">Delete</button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -990,7 +1093,7 @@ function AdminView({ state, actions }) {
             <table className="w-full text-sm">
               <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
                 <th className="p-3">Employee</th><th className="p-3">Department</th><th className="p-3">Module</th><th className="p-3">Progress</th>
-                <th className="p-3">Time (min)</th><th className="p-3">Quiz Score</th><th className="p-3"></th>
+                <th className="p-3">Time (min)</th><th className="p-3">Due</th><th className="p-3">Quiz Score</th><th className="p-3"></th>
               </tr></thead>
               <tbody>
                 {state.assignments.filter(a => {
@@ -999,6 +1102,7 @@ function AdminView({ state, actions }) {
                 }).map(a => {
                   const emp = state.employees.find(e => e.id === a.employeeId);
                   const mod = state.modules.find(m => m.id === a.moduleId);
+                  const overdue = a.dueDate && a.status !== "completed" && new Date(a.dueDate) < new Date(new Date().toDateString());
                   return (
                     <tr key={a.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
                       <td className="p-3 font-medium">{emp?.name}</td>
@@ -1006,6 +1110,7 @@ function AdminView({ state, actions }) {
                       <td className="p-3">{mod?.title}</td>
                       <td className="p-3 w-32"><ProgressBar value={a.progress} /></td>
                       <td className="p-3">{a.timeSpentMin}</td>
+                      <td className={`p-3 ${overdue ? "tp-red-text font-semibold" : ""}`}>{a.dueDate ? (overdue ? `Overdue (${a.dueDate})` : a.dueDate) : "—"}</td>
                       <td className="p-3">{a.quizScore != null ? `${a.quizScore}%` : "—"}</td>
                       <td className="p-3">
                         <button onClick={() => { if (window.confirm(`Remove "${mod?.title}" from ${emp?.name}'s training list?`)) actions.removeAssignment(a.id, "Admin"); }}
@@ -1250,17 +1355,21 @@ function ManagerView({ state, managerId, actions }) {
   const myName = state.employees.find(e => e.id === managerId)?.name;
   const [tab, setTab] = useState("team");
   const team = state.employees.filter(e => e.managerId === managerId);
-  const [assignEmp, setAssignEmp] = useState("");
+  const [assignEmpIds, setAssignEmpIds] = useState([]);
   const [assignMod, setAssignMod] = useState("");
   const [assignPassThreshold, setAssignPassThreshold] = useState(80);
+  const [assignDueDate, setAssignDueDate] = useState("");
   const [assigning, setAssigning] = useState(false);
   const [assignFeedback, setAssignFeedback] = useState(null);
 
   useEffect(() => {
-    if (!assignEmp && team.length > 0) setAssignEmp(team[0].id);
-  }, [team.length, assignEmp]);
+    if (assignEmpIds.length === 0 && team.length > 0) setAssignEmpIds([team[0].id]);
+  }, [team.length]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!assignMod && state.modules.length > 0) setAssignMod(state.modules[0].id);
+    if (!assignMod && state.modules.length > 0) {
+      const firstActive = state.modules.find(m => !m.archived);
+      if (firstActive) setAssignMod(firstActive.id);
+    }
   }, [state.modules.length, assignMod]);
 
   useEffect(() => {
@@ -1348,35 +1457,53 @@ function ManagerView({ state, managerId, actions }) {
         <div className="tp-card p-4 grid gap-3 max-w-md">
           {team.length === 0 ? (
             <div className="text-sm tp-slate-text">No one is on your team yet — once you have team members, you can assign them training here.</div>
-          ) : state.modules.length === 0 ? (
-            <div className="text-sm tp-slate-text">No training modules exist yet — ask the admin team to upload one first.</div>
+          ) : state.modules.filter(m => !m.archived).length === 0 ? (
+            <div className="text-sm tp-slate-text">No active training modules exist yet — ask the admin team to upload one first.</div>
           ) : (
             <>
-              <label className="text-xs tp-slate-text">Employee</label>
-              <select className="tp-input" value={assignEmp} onChange={e => setAssignEmp(e.target.value)}>
-                {team.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-              </select>
+              <div className="flex items-center justify-between">
+                <label className="text-xs tp-slate-text">Employees ({assignEmpIds.length} selected)</label>
+                <button onClick={() => setAssignEmpIds(assignEmpIds.length === team.length ? [] : team.map(e => e.id))}
+                  className="text-xs tp-blue-text font-medium">{assignEmpIds.length === team.length ? "Deselect all" : "Select whole team"}</button>
+              </div>
+              <div className="grid gap-1 p-2 rounded-lg tp-ice-bg max-h-40 overflow-y-auto tp-scrollbar">
+                {team.map(e => (
+                  <label key={e.id} className="flex items-center gap-2 text-sm py-0.5">
+                    <input type="checkbox" checked={assignEmpIds.includes(e.id)}
+                      onChange={ev => setAssignEmpIds(ev.target.checked ? [...assignEmpIds, e.id] : assignEmpIds.filter(id => id !== e.id))} />
+                    {e.name}
+                  </label>
+                ))}
+              </div>
               <label className="text-xs tp-slate-text">Training module</label>
               <select className="tp-input" value={assignMod} onChange={e => setAssignMod(e.target.value)}>
-                {[...state.modules].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).map(m => <option key={m.id} value={m.id}>{m.title}{m.hasQuiz ? " (has quiz)" : ""}</option>)}
+                {[...state.modules].filter(m => !m.archived).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)).map(m => <option key={m.id} value={m.id}>{m.title}{m.hasQuiz ? " (has quiz)" : ""}</option>)}
               </select>
               <label className="text-xs tp-slate-text">Passing score required {state.modules.find(m => m.id === assignMod)?.hasQuiz ? "" : "(no quiz on this module yet)"}</label>
               <input type="number" min={0} max={100} className="tp-input" value={assignPassThreshold} onChange={e => setAssignPassThreshold(Number(e.target.value))} />
+              <label className="text-xs tp-slate-text">Due date (optional)</label>
+              <input type="date" className="tp-input" value={assignDueDate} onChange={e => setAssignDueDate(e.target.value)} />
               <p className="text-xs tp-slate-text -mt-1">They get 3 attempts. Falling short restarts the module; a 3rd miss auto-escalates to the admin team.</p>
               <button onClick={async () => {
                 setAssignFeedback(null); setAssigning(true);
-                const result = await actions.assign(assignEmp, assignMod, myName, assignPassThreshold);
-                setAssignFeedback(result); setAssigning(false);
-              }} disabled={!assignEmp || !assignMod || assigning}
+                const results = await Promise.all(assignEmpIds.map(id => actions.assign(id, assignMod, myName, assignPassThreshold, assignDueDate || null)));
+                const okCount = results.filter(r => r.ok).length;
+                const failMsgs = results.filter(r => !r.ok).map(r => r.error);
+                setAssignFeedback({ ok: okCount > 0, okCount, total: results.length, failMsgs, moduleTitle: state.modules.find(m => m.id === assignMod)?.title });
+                setAssigning(false);
+              }} disabled={assignEmpIds.length === 0 || !assignMod || assigning}
                 className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2 justify-center disabled:opacity-40">
-                <Send size={15} /> {assigning ? "Assigning…" : "Assign module"}
+                <Send size={15} /> {assigning ? "Assigning…" : `Assign to ${assignEmpIds.length || ""} ${assignEmpIds.length === 1 ? "person" : "people"}`}
               </button>
               {assignFeedback && (
-                assignFeedback.ok ? (
-                  <div className="text-xs tp-green-text font-medium flex items-center gap-1"><CheckCircle2 size={13} /> Assigned "{assignFeedback.moduleTitle}" to {assignFeedback.employeeName}.</div>
-                ) : (
-                  <div className="text-xs tp-red-text font-medium flex items-center gap-1"><AlertTriangle size={13} /> {assignFeedback.error}</div>
-                )
+                <div className="grid gap-1">
+                  {assignFeedback.okCount > 0 && (
+                    <div className="text-xs tp-green-text font-medium flex items-center gap-1"><CheckCircle2 size={13} /> Assigned "{assignFeedback.moduleTitle}" to {assignFeedback.okCount} of {assignFeedback.total}.</div>
+                  )}
+                  {assignFeedback.failMsgs.map((msg, i) => (
+                    <div key={i} className="text-xs tp-red-text font-medium flex items-center gap-1"><AlertTriangle size={13} /> {msg}</div>
+                  ))}
+                </div>
               )}
             </>
           )}
@@ -1390,18 +1517,20 @@ function ManagerView({ state, managerId, actions }) {
           <table className="w-full text-sm">
             <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
               <th className="p-3">Employee</th><th className="p-3">Module</th><th className="p-3">Progress</th>
-              <th className="p-3"><Clock size={13} className="inline mr-1" />Time</th><th className="p-3">Quiz Score</th><th className="p-3"></th>
+              <th className="p-3"><Clock size={13} className="inline mr-1" />Time</th><th className="p-3">Due</th><th className="p-3">Quiz Score</th><th className="p-3"></th>
             </tr></thead>
             <tbody>
               {state.assignments.filter(a => team.some(t => t.id === a.employeeId)).map(a => {
                 const emp = state.employees.find(e => e.id === a.employeeId);
                 const mod = state.modules.find(m => m.id === a.moduleId);
+                const overdue = a.dueDate && a.status !== "completed" && new Date(a.dueDate) < new Date(new Date().toDateString());
                 return (
                   <tr key={a.id} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
                     <td className="p-3 font-medium">{emp?.name}</td>
                     <td className="p-3">{mod?.title}</td>
                     <td className="p-3 w-32"><ProgressBar value={a.progress} /></td>
                     <td className="p-3">{formatActiveTime(a.activeSeconds, a.timeSpentMin)}</td>
+                    <td className={`p-3 ${overdue ? "tp-red-text font-semibold" : ""}`}>{a.dueDate ? (overdue ? `Overdue (${a.dueDate})` : a.dueDate) : "—"}</td>
                     <td className="p-3">{a.quizScore != null ? `${a.quizScore}%` : "—"}</td>
                     <td className="p-3">
                       <div className="flex items-center gap-2">
@@ -1500,7 +1629,7 @@ function TraineeClassView({ state, employeeId }) {
 }
 
 function TrainingLibrary({ modules }) {
-  const sorted = [...modules].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const sorted = [...modules].filter(m => !m.archived).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   return (
     <div className="grid gap-3">
       {sorted.length === 0 && <div className="text-sm tp-slate-text">No training material uploaded yet.</div>}
@@ -1633,6 +1762,11 @@ function TraineeView({ state, employeeId, actions }) {
                   </div>
                   {a.status === "completed" && <span className="text-xs tp-green-text font-semibold flex items-center gap-1"><CheckCircle2 size={13} /> Passed — {a.quizScore}%</span>}
                 </div>
+                {a.dueDate && a.status !== "completed" && (
+                  <div className={`text-[11px] mt-1 font-medium ${new Date(a.dueDate) < new Date(new Date().toDateString()) ? "tp-red-text" : "tp-slate-text"}`}>
+                    {new Date(a.dueDate) < new Date(new Date().toDateString()) ? `Overdue — was due ${a.dueDate}` : `Due ${a.dueDate}`}
+                  </div>
+                )}
                 {mod.hasQuiz && a.status !== "completed" && (
                   <div className="text-[11px] tp-slate-text mt-1">
                     Need {a.passThreshold ?? 80}%+ to pass · Attempt {a.attempts || 0} of 3
@@ -1917,9 +2051,16 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
       {activeClass && (
         <div className="grid gap-4">
           <div className="tp-card p-4">
-            <div className="font-semibold tp-display text-lg">{activeClass.name}</div>
-            <div className="text-xs tp-slate-text mb-3">Class date: {activeClass.date}</div>
-
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-semibold tp-display text-lg">{activeClass.name}</div>
+                <div className="text-xs tp-slate-text mb-3">Class date: {activeClass.date}</div>
+              </div>
+              {scope === "admin" && (
+                <button onClick={() => { if (window.confirm(`Remove "${activeClass.name}" from the calendar entirely? Everyone enrolled will be notified. This can't be undone.`)) { actions.deleteClassTraining(activeClass.id, actorName); setClassTab(null); } }}
+                  className="text-xs tp-red-text hover:underline whitespace-nowrap">Delete this class</button>
+              )}
+            </div>
 
             <div className="text-xs font-medium tp-slate-text mb-1">Hours logged per day</div>
             <div className="flex flex-wrap gap-2 mb-2">
@@ -2266,7 +2407,43 @@ function MonthlyFeedbackView({ state, managerId, actions }) {
 
 
 /* ---------------------------------- LOGIN GATES (name + password, no company data) ---------------------------------- */
-function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp }) {
+function ForgotPasswordBlock({ onRequestReset }) {
+  const [showForm, setShowForm] = useState(false);
+  const [email, setEmail] = useState("");
+  const [status, setStatus] = useState(null); // null | 'sending' | 'sent' | 'error'
+  const [error, setError] = useState("");
+
+  const submit = async () => {
+    if (!email.trim()) return;
+    setStatus("sending"); setError("");
+    const result = await onRequestReset(email.trim());
+    if (result.ok) setStatus("sent");
+    else { setStatus("error"); setError(result.error); }
+  };
+
+  if (!showForm) {
+    return <button onClick={() => setShowForm(true)} className="text-xs tp-slate-text underline">Forgot password?</button>;
+  }
+  return (
+    <div className="grid gap-2 p-3 rounded-lg tp-ice-bg text-left">
+      {status === "sent" ? (
+        <div className="text-xs tp-green-text">A new password was emailed to {email}. Check your inbox, then log in above.</div>
+      ) : (
+        <>
+          <div className="text-xs tp-slate-text">Enter your work email — we'll generate a new password and email it to you.</div>
+          <input type="email" className="tp-input" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
+          {status === "error" && <div className="text-xs tp-red-text">{error}</div>}
+          <div className="flex items-center gap-2">
+            <button onClick={submit} disabled={status === "sending"} className="tp-btn-primary rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-40">{status === "sending" ? "Sending…" : "Send new password"}</button>
+            <button onClick={() => setShowForm(false)} className="text-xs tp-slate-text">Cancel</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp, onRequestReset }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -2287,13 +2464,14 @@ function EmployeeLoginGate({ employees, onSuccess, onGoToSignUp }) {
         <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && tryLogin()} />
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
+        <ForgotPasswordBlock onRequestReset={onRequestReset} />
         <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Sign up for access →</button>
       </div>
     </div>
   );
 }
 
-function ManagerLoginGate({ managers, onSuccess, onGoToSignUp }) {
+function ManagerLoginGate({ managers, onSuccess, onGoToSignUp, onRequestReset }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -2314,6 +2492,7 @@ function ManagerLoginGate({ managers, onSuccess, onGoToSignUp }) {
         <input type="password" className="tp-input" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && tryLogin()} />
         {error && <div className="text-xs tp-red-text">{error}</div>}
         <button onClick={tryLogin} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium">Log in</button>
+        <ForgotPasswordBlock onRequestReset={onRequestReset} />
         <button onClick={onGoToSignUp} className="text-xs tp-blue-text font-medium">New here? Register as a manager →</button>
       </div>
     </div>
@@ -2845,22 +3024,23 @@ function AmplifyTrainingAppInner() {
         setDataStatus(s => ({ ...s, error: `Couldn't remove request from database: ${err.message}` }));
       }
     },
-    assign: async (employeeId, moduleId, actorName, passThreshold = 80) => {
+    assign: async (employeeId, moduleId, actorName, passThreshold = 80, dueDate = null) => {
       const emp = employees.find(e => e.id === employeeId);
       const mod = modules.find(m => m.id === moduleId);
       if (assignments.some(a => a.employeeId === employeeId && a.moduleId === moduleId)) {
         return { ok: false, error: `${emp?.name || "This employee"} is already assigned "${mod?.title}".` };
       }
       try {
-        const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started", pass_threshold: passThreshold, attempts: 0, active_seconds: 0 }]);
+        const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started", pass_threshold: passThreshold, attempts: 0, active_seconds: 0, due_date: dueDate }]);
         setAssignments(prev => [...prev, fromDbAssignment(inserted)]);
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't save assignment to database: ${err.message}` }));
-        setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started", passThreshold, attempts: 0, activeSeconds: 0, assignedAt: new Date().toISOString() }]);
+        setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started", passThreshold, attempts: 0, activeSeconds: 0, assignedAt: new Date().toISOString(), dueDate }]);
       }
-      notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}. You need ${passThreshold}%+ on the quiz to complete it.`, "trainee", employeeId);
+      const dueText = dueDate ? ` Due by ${dueDate}.` : "";
+      notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}. You need ${passThreshold}%+ on the quiz to complete it.${dueText}`, "trainee", employeeId);
       if (emp?.managerId) notify(`You assigned "${mod?.title}" to ${emp?.name}.`, "manager", emp.managerId);
-      logActivity(`Assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""} — pass threshold ${passThreshold}%.`, "assignment", null, employeeId);
+      logActivity(`Assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""} — pass threshold ${passThreshold}%${dueDate ? `, due ${dueDate}` : ""}.`, "assignment", null, employeeId);
       return { ok: true, employeeName: emp?.name, moduleTitle: mod?.title };
     },
     submitQuiz: async (employeeId, moduleId, score, questionResults = []) => {
@@ -2936,12 +3116,14 @@ function AmplifyTrainingAppInner() {
       const mine = assignments.filter(a => a.employeeId === employeeId && a.status !== "completed" && a.assignedAt);
       mine.forEach(a => {
         const assignedAt = new Date(a.assignedAt).getTime();
+        const mod = modules.find(m => m.id === a.moduleId);
         if (Date.now() - assignedAt > fiveHoursMs) {
-          const already = notifications.some(n => n.audience === "trainee" && n.recipientId === employeeId && n.text.includes(`finish "${modules.find(m => m.id === a.moduleId)?.title}"`));
-          if (!already) {
-            const mod = modules.find(m => m.id === a.moduleId);
-            notify(`Reminder: please finish "${mod?.title}" — it's been assigned for over 5 hours.`, "trainee", employeeId);
-          }
+          const already = notifications.some(n => n.audience === "trainee" && n.recipientId === employeeId && n.text.includes(`finish "${mod?.title}"`) && n.text.includes("5 hours"));
+          if (!already) notify(`Reminder: please finish "${mod?.title}" — it's been assigned for over 5 hours.`, "trainee", employeeId);
+        }
+        if (a.dueDate && new Date(a.dueDate) < new Date(new Date().toDateString())) {
+          const already = notifications.some(n => n.audience === "trainee" && n.recipientId === employeeId && n.text.includes(`"${mod?.title}" was due`));
+          if (!already) notify(`"${mod?.title}" was due ${a.dueDate} and isn't complete yet — please finish it as soon as you can.`, "trainee", employeeId);
         }
       });
     },
@@ -3102,6 +3284,17 @@ function AmplifyTrainingAppInner() {
       try { await sbUpdate("coaching_sessions", "id", sessionId, { escalated: true }); }
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save escalation to database: ${err.message}` })); }
     },
+    resolveEscalation: async (sessionId) => {
+      const session = coachingSessions.find(s => s.id === sessionId);
+      const emp = employees.find(e => e.id === session?.employeeId);
+      try {
+        await sbUpdate("coaching_sessions", "id", sessionId, { resolved: true });
+        setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, resolved: true } : s));
+        logActivity(`Escalation for ${emp?.name || "an employee"} marked resolved.`, "escalation_resolved", null, session?.employeeId);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't mark escalation resolved: ${err.message}` }));
+      }
+    },
     dismissCredential: (id) => setCredentialsToShare(credentialsToShare.filter(c => c.id !== id)),
     markNotificationsRead: (ids) => {
       if (ids.length === 0) return;
@@ -3172,6 +3365,44 @@ function AmplifyTrainingAppInner() {
       logActivity(`Password changed.`, "password_change", null, employeeId);
       return { ok: true };
     },
+    resetPasswordByAdmin: async (employeeId) => {
+      const emp = employees.find(e => e.id === employeeId);
+      const newPassword = generateTempPassword();
+      try {
+        await sbUpdate("employees", "id", employeeId, { password: newPassword });
+        setEmployees(employees.map(e => e.id === employeeId ? { ...e, password: newPassword } : e));
+        setCredentialsToShare([{ id: employeeId, name: emp?.name, password: newPassword }, ...credentialsToShare]);
+        logActivity(`Password reset for ${emp?.name || "a user"} by admin.`, "password_reset", null, employeeId);
+        if (emp?.email) {
+          fetch("/api/send-email", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ to: emp.email, subject: "Your Amplify password was reset", text: `Your password was reset by the admin team. New password: ${newPassword}\n\nPlease change it after logging in.` }),
+          }).catch(() => {});
+        }
+        return { ok: true };
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't reset password for ${emp?.name || "this user"}: ${err.message}` }));
+        return { ok: false, error: err.message };
+      }
+    },
+    requestPasswordReset: async (email) => {
+      const emp = employees.find(e => e.email?.toLowerCase() === email.trim().toLowerCase());
+      if (!emp) return { ok: false, error: "No account found with that email." };
+      const newPassword = generateTempPassword();
+      try {
+        await sbUpdate("employees", "id", emp.id, { password: newPassword });
+        setEmployees(employees.map(e => e.id === emp.id ? { ...e, password: newPassword } : e));
+        logActivity(`Password reset requested (self-service).`, "password_reset", null, emp.id);
+        const emailRes = await fetch("/api/send-email", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: emp.email, subject: "Your Amplify password was reset", text: `You requested a password reset. Your new password: ${newPassword}\n\nPlease change it after logging in.` }),
+        });
+        if (!emailRes.ok) return { ok: false, error: "Couldn't send the reset email — contact your admin team for a manual reset." };
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: `Couldn't send the reset email — contact your admin team for a manual reset. (${err.message})` };
+      }
+    },
     deleteUser: async (employeeId) => {
       const emp = employees.find(e => e.id === employeeId);
       try {
@@ -3191,6 +3422,16 @@ function AmplifyTrainingAppInner() {
         logActivity(`Quiz deleted for a module.`, "quiz_deleted", null, null);
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't delete quiz from database: ${err.message}` }));
+      }
+    },
+    archiveModule: async (moduleId, archived = true) => {
+      const mod = modules.find(m => m.id === moduleId);
+      try {
+        await sbUpdate("modules", "id", moduleId, { archived });
+        setModules(modules.map(m => m.id === moduleId ? { ...m, archived } : m));
+        logActivity(`Module "${mod?.title || "Untitled"}" was ${archived ? "archived" : "unarchived"}.`, archived ? "module_archived" : "module_unarchived", null, null);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't ${archived ? "archive" : "unarchive"} "${mod?.title || "this module"}": ${err.message}` }));
       }
     },
     deleteModule: async (moduleId) => {
@@ -3258,6 +3499,19 @@ function AmplifyTrainingAppInner() {
         logActivity(`Deleted report "${report?.fileName}".`, "material_deleted", null, null);
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't delete "${report?.fileName || "this report"}": ${err.message}` }));
+      }
+    },
+    deleteClassTraining: async (classId, actorName) => {
+      const cls = classTrainings.find(c => c.id === classId);
+      try {
+        await sbDelete("class_trainings", "id", classId);
+        setClassTrainings(classTrainings.filter(c => c.id !== classId));
+        (cls?.enrollments || []).forEach(en => {
+          notify(`"${cls.name}" (${cls.date}) was removed from the calendar by ${actorName} — check with them if it's been rescheduled.`, "trainee", en.employeeId);
+        });
+        logActivity(`In-class training "${cls?.name || "Untitled"}" was removed from the calendar by ${actorName}.`, "class_deleted", null, null);
+      } catch (err) {
+        setDataStatus(s => ({ ...s, error: `Couldn't remove "${cls?.name || "this class"}": ${err.message}` }));
       }
     },
     removeEnrollment: async (classId, employeeId, actorName) => {
@@ -3358,7 +3612,7 @@ function AmplifyTrainingAppInner() {
 
         <div className="tp-glass p-3 md:p-5">
           {role === "trainee" && !loggedInEmployeeId && !showSignUp && (
-            <EmployeeLoginGate employees={employees} onSuccess={(id) => { setLoggedInEmployeeId(id); saveSession({ type: "trainee", id }); logActivity(`${employees.find(e => e.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} />
+            <EmployeeLoginGate employees={employees} onSuccess={(id) => { setLoggedInEmployeeId(id); saveSession({ type: "trainee", id }); logActivity(`${employees.find(e => e.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("trainee"); setShowSignUp(true); }} onRequestReset={actions.requestPasswordReset} />
           )}
           {role === "trainee" && loggedInEmployeeId && (
             <div className="mb-3">
@@ -3378,7 +3632,7 @@ function AmplifyTrainingAppInner() {
           )}
 
           {role === "manager" && !loggedInManagerId && !showSignUp && (
-            <ManagerLoginGate managers={managers} onSuccess={(id) => { setLoggedInManagerId(id); saveSession({ type: "manager", id }); logActivity(`${managers.find(m => m.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} />
+            <ManagerLoginGate managers={managers} onSuccess={(id) => { setLoggedInManagerId(id); saveSession({ type: "manager", id }); logActivity(`${managers.find(m => m.id === id)?.name} logged in.`, "login", null, id); }} onGoToSignUp={() => { setSignUpDefaultRole("manager"); setShowSignUp(true); }} onRequestReset={actions.requestPasswordReset} />
           )}
           {role === "manager" && loggedInManagerId && (
             <div className="mb-3">
