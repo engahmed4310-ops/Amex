@@ -2297,15 +2297,25 @@ function CoachingSection({ state, managerId, team, actions, actorName }) {
               <div className="font-semibold mb-2 flex items-center gap-2">{emp.name} <DeptBadge dept={emp.dept} /></div>
               <div className="grid gap-2">
                 {sessions.map(s => (
-                  <div key={s.id} className="border rounded-lg p-3" style={{ borderColor: s.escalated ? "var(--red)" : "var(--line)" }}>
+                  <div key={s.id} className="border rounded-lg p-3" style={{ borderColor: s.escalated && !s.resolved ? "var(--red)" : "var(--line)" }}>
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-semibold px-2 py-0.5 rounded-full tp-ice-bg tp-blue-text">{s.category}</span>
                       <span className="text-xs tp-slate-text">{s.date}</span>
                     </div>
                     <div className="text-sm mb-2">{s.notes}</div>
-                    {s.escalated ? (
-                      <span className="text-xs tp-red-text font-semibold flex items-center gap-1"><AlertTriangle size={13} /> Escalated to admin for intervention</span>
-                    ) : (
+                    {s.escalated && !s.resolved && (
+                      <span className="text-xs tp-red-text font-semibold flex items-center gap-1"><AlertTriangle size={13} /> Escalated to admin — awaiting intervention</span>
+                    )}
+                    {s.escalated && s.resolved && (
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <span className="text-xs tp-green-text font-semibold flex items-center gap-1"><CheckCircle2 size={13} /> Escalated previously — resolved by admin</span>
+                        <button onClick={() => actions.escalateCoaching(s.id, actorName)}
+                          className="text-xs rounded-lg px-3 py-1.5 tp-red-text border border-red-200 flex items-center gap-1">
+                          <AlertTriangle size={13} /> Re-escalate — issue recurring
+                        </button>
+                      </div>
+                    )}
+                    {!s.escalated && (
                       <button onClick={() => actions.escalateCoaching(s.id, actorName)}
                         className="text-xs rounded-lg px-3 py-1.5 tp-red-text border border-red-200 flex items-center gap-1">
                         <AlertTriangle size={13} /> Escalate for intervention — call quality
@@ -3370,10 +3380,11 @@ function AmplifyTrainingAppInner() {
     escalateCoaching: async (sessionId, actorName) => {
       const session = coachingSessions.find(s => s.id === sessionId);
       const emp = employees.find(e => e.id === session.employeeId);
-      setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, escalated: true } : s));
-      notify(`${actorName} escalated ${emp?.name} for intervention — call quality concern.`, "admin");
-      logActivity(`Escalated for intervention — call quality — by ${actorName}.`, "escalation", null, session.employeeId);
-      try { await sbUpdate("coaching_sessions", "id", sessionId, { escalated: true }); }
+      const wasResolved = session.resolved;
+      setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, escalated: true, resolved: false } : s));
+      notify(`${actorName} ${wasResolved ? "re-escalated" : "escalated"} ${emp?.name} for intervention — call quality concern.`, "admin");
+      logActivity(`${wasResolved ? "Re-escalated" : "Escalated"} for intervention — call quality — by ${actorName}.`, "escalation", null, session.employeeId);
+      try { await sbUpdate("coaching_sessions", "id", sessionId, { escalated: true, resolved: false }); }
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save escalation to database: ${err.message}` })); }
     },
     resolveEscalation: async (sessionId) => {
