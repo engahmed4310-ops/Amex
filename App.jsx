@@ -216,6 +216,30 @@ function urlBase64ToUint8Array(base64String) {
   for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
   return outputArray;
 }
+// Builds a standard .ics calendar invite so enrolling someone in an in-class
+// training can email them a one-tap "Add to calendar" — works with Outlook,
+// Gmail, and Apple Calendar alike. Times are floating (no timezone offset),
+// which calendar apps read as the recipient's local time — fine for a
+// single-timezone company, but worth knowing if that ever changes.
+function buildClassICS({ uid, title, date, startTime, endTime, trainerName }) {
+  const stamp = (d, t) => `${d.replace(/-/g, "")}T${(t || "0900").replace(":", "")}00`;
+  const dtStart = stamp(date, startTime);
+  const dtEnd = stamp(date, endTime || "17:00");
+  const now = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+  const desc = trainerName ? `Trainer: ${trainerName}` : "In-class training session";
+  return [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Amplify Training//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+    "BEGIN:VEVENT",
+    `UID:${uid}@amplify-training`,
+    `DTSTAMP:${now}`,
+    `DTSTART:${dtStart}`,
+    `DTEND:${dtEnd}`,
+    `SUMMARY:${title}`,
+    `DESCRIPTION:${desc}`,
+    "STATUS:CONFIRMED",
+    "END:VEVENT", "END:VCALENDAR",
+  ].join("\r\n");
+}
 async function sbUploadFile(file, folder = "modules") {
   const path = `${folder}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${path}`, {
@@ -284,7 +308,7 @@ function fromDbAssignment(row) {
 // --- Class trainings (nested: sessions, enrollments, comments) ---
 function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
   return classRows.map(c => ({
-    id: c.id, name: c.name, date: c.class_date, quizEnabled: c.quiz_enabled, trainerName: c.trainer_name || "", slots: c.slots ?? null,
+    id: c.id, name: c.name, date: c.class_date, quizEnabled: c.quiz_enabled, trainerName: c.trainer_name || "", slots: c.slots ?? null, startTime: c.start_time || "", endTime: c.end_time || "",
     sessions: sessionRows.filter(s => s.class_id === c.id).map(s => ({ date: s.session_date, hours: Number(s.hours) })),
     enrollments: enrollRows.filter(e => e.class_id === c.id).map(e => ({
       employeeId: e.employee_id, quizScore: e.quiz_score,
@@ -1609,7 +1633,7 @@ function TraineeClassView({ state, employeeId }) {
       {activeClass && (
         <div className="tp-card p-4">
           <div className="font-semibold tp-display text-lg mb-1">{activeClass.name}</div>
-          <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}</div>
+          <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}{activeClass.startTime ? ` · ${activeClass.startTime}${activeClass.endTime ? `–${activeClass.endTime}` : ""}` : ""}</div>
           {activeClass.trainerName && <div className="text-xs tp-slate-text mb-1">Trainer: <span className="font-medium">{activeClass.trainerName}</span></div>}
           {activeClass.slots != null && <div className="text-xs tp-slate-text mb-3">{activeClass.enrollments.length} of {activeClass.slots} slots filled</div>}
           <div className="text-xs font-medium tp-slate-text mb-1">Hours logged</div>
@@ -2001,7 +2025,7 @@ function TrainingCalendar({ classTrainings, onSelectClass, onAddDay, canAdd }) {
 function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
   const [classTab, setClassTab] = useState(null);
   const [showNewClass, setShowNewClass] = useState(false);
-  const [newClass, setNewClass] = useState({ name: "", date: "", trainerName: "", slots: "" });
+  const [newClass, setNewClass] = useState({ name: "", date: "", trainerName: "", slots: "", startTime: "", endTime: "" });
   const [enrollId, setEnrollId] = useState("");
   const [enrollError, setEnrollError] = useState("");
   const [sessionDraft, setSessionDraft] = useState({ date: "", hours: "" });
@@ -2024,9 +2048,10 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
     if (!newClass.name.trim() || !(newClass.date || prefillDate)) return;
     const trainerName = newClass.trainerName;
     const slots = newClass.slots ? Number(newClass.slots) : null;
-    setNewClass({ name: "", date: "", trainerName: "", slots: "" });
+    const startTime = newClass.startTime, endTime = newClass.endTime;
+    setNewClass({ name: "", date: "", trainerName: "", slots: "", startTime: "", endTime: "" });
     setShowNewClass(false);
-    const created = await actions.addClassTraining({ name: newClass.name, date: prefillDate || newClass.date, trainerName, slots }, actorName);
+    const created = await actions.addClassTraining({ name: newClass.name, date: prefillDate || newClass.date, trainerName, slots, startTime, endTime }, actorName);
     setClassTab(created.id);
   };
 
@@ -2104,7 +2129,20 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
             <div className="flex items-center justify-between">
               <div>
                 <div className="font-semibold tp-display text-lg">{activeClass.name}</div>
-                <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}</div>
+                <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}{activeClass.startTime ? ` · ${activeClass.startTime}${activeClass.endTime ? `–${activeClass.endTime}` : ""}` : ""}</div>
+                {scope === "admin" && !activeClass.startTime && (
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs tp-slate-text">Add time:</span>
+                    <input type="time" className="tp-input text-xs w-auto" id={`start-${activeClass.id}`} />
+                    <span className="text-xs tp-slate-text">to</span>
+                    <input type="time" className="tp-input text-xs w-auto" id={`end-${activeClass.id}`} />
+                    <button onClick={() => {
+                      const st = document.getElementById(`start-${activeClass.id}`).value;
+                      const et = document.getElementById(`end-${activeClass.id}`).value;
+                      if (st) actions.setClassTime(activeClass.id, st, et);
+                    }} className="text-xs tp-blue-text font-medium">Save</button>
+                  </div>
+                )}
                 {scope === "admin" ? (
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-xs tp-slate-text">Trainer:</span>
@@ -2230,6 +2268,12 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
             <input className="tp-input" placeholder="Class name" value={newClass.name} onChange={e => setNewClass({ ...newClass, name: e.target.value })} />
             <label className="text-xs tp-slate-text">Date</label>
             <input type="date" className="tp-input" value={newClass.date} onChange={e => setNewClass({ ...newClass, date: e.target.value })} />
+            <label className="text-xs tp-slate-text">Start &amp; end time (optional, but needed for calendar invites to show the right time)</label>
+            <div className="flex items-center gap-2">
+              <input type="time" className="tp-input" value={newClass.startTime} onChange={e => setNewClass({ ...newClass, startTime: e.target.value })} />
+              <span className="text-xs tp-slate-text">to</span>
+              <input type="time" className="tp-input" value={newClass.endTime} onChange={e => setNewClass({ ...newClass, endTime: e.target.value })} />
+            </div>
             <label className="text-xs tp-slate-text">Trainer (optional)</label>
             <input className="tp-input" placeholder="Who's delivering this training?" value={newClass.trainerName} onChange={e => setNewClass({ ...newClass, trainerName: e.target.value })} />
             <label className="text-xs tp-slate-text">Number of slots (optional)</label>
@@ -3251,12 +3295,12 @@ function AmplifyTrainingAppInner() {
     },
     addClassTraining: async (c, actorName) => {
       const tempId = `temp-${Date.now()}`;
-      const optimistic = { id: tempId, name: c.name, date: c.date, quizEnabled: false, trainerName: c.trainerName || "", slots: c.slots ?? null, sessions: [], enrollments: [] };
+      const optimistic = { id: tempId, name: c.name, date: c.date, quizEnabled: false, trainerName: c.trainerName || "", slots: c.slots ?? null, startTime: c.startTime || "", endTime: c.endTime || "", sessions: [], enrollments: [] };
       setClassTrainings(prev => [...prev, optimistic]);
       managers.forEach(m => notify(`New training class added: "${c.name}" on ${c.date}${c.trainerName ? ` — trainer: ${c.trainerName}` : ""}${c.slots ? ` — ${c.slots} slots` : ""} — you can enroll your team from the calendar.`, "manager", m.id));
       try {
-        const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false, trainer_name: c.trainerName || null, slots: c.slots ?? null }]);
-        const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, trainerName: inserted.trainer_name || "", slots: inserted.slots ?? null, sessions: [], enrollments: [] };
+        const [inserted] = await sbInsert("class_trainings", [{ name: c.name, class_date: c.date, quiz_enabled: false, trainer_name: c.trainerName || null, slots: c.slots ?? null, start_time: c.startTime || null, end_time: c.endTime || null }]);
+        const created = { id: inserted.id, name: inserted.name, date: inserted.class_date, quizEnabled: false, trainerName: inserted.trainer_name || "", slots: inserted.slots ?? null, startTime: inserted.start_time || "", endTime: inserted.end_time || "", sessions: [], enrollments: [] };
         setClassTrainings(prev => prev.map(cls => cls.id === tempId ? created : cls));
         return created;
       } catch (err) {
@@ -3286,6 +3330,11 @@ function AmplifyTrainingAppInner() {
       try { await sbUpdate("class_trainings", "id", classId, { slots }); }
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save slots to database: ${err.message}` })); }
     },
+    setClassTime: async (classId, startTime, endTime) => {
+      setClassTrainings(classTrainings.map(c => c.id === classId ? { ...c, startTime, endTime } : c));
+      try { await sbUpdate("class_trainings", "id", classId, { start_time: startTime || null, end_time: endTime || null }); }
+      catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save class time to database: ${err.message}` })); }
+    },
     enrollInClass: async (classId, employeeId, actorName, scope) => {
       const cls = classTrainings.find(c => c.id === classId);
       const emp = employees.find(e => e.id === employeeId);
@@ -3307,6 +3356,24 @@ function AmplifyTrainingAppInner() {
         notify(`${emp?.name} was enrolled in "${cls?.name}" by ${actorName}.`, "manager", emp.managerId);
       }
       logActivity(`${emp?.name} enrolled in "${cls?.name}" by ${actorName}.`, "enrollment", null, employeeId);
+
+      // Best-effort calendar invite — same reasoning as email/push elsewhere:
+      // this is a bonus on top of the in-app + notification confirmation
+      // above, which already succeeded, so a failure here stays quiet in
+      // the console rather than surfacing an error banner.
+      if (emp?.email && cls) {
+        const ics = buildClassICS({ uid: `${classId}-${employeeId}`, title: cls.name, date: cls.date, startTime: cls.startTime, endTime: cls.endTime, trainerName: cls.trainerName });
+        fetch("/api/send-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: emp.email,
+            subject: `Calendar invite: ${cls.name}`,
+            text: `You've been enrolled in "${cls.name}" on ${cls.date}${cls.startTime ? ` at ${cls.startTime}` : ""}${cls.trainerName ? ` with ${cls.trainerName}` : ""}. A calendar invite is attached — open it to add this to your Outlook or calendar app.`,
+            icsContent: ics, icsFilename: "training-invite.ics",
+          }),
+        }).catch(err => console.warn("Calendar invite email failed to send:", err.message));
+      }
       return { ok: true };
     },
     setClassQuizScore: async (classId, employeeId, score) => {
@@ -3480,7 +3547,7 @@ function AmplifyTrainingAppInner() {
           fetch("/api/send-email", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ to: emp.email, subject: "Your Amplify password was reset", text: `Your password was reset by the admin team. New password: ${newPassword}\n\nPlease change it after logging in.` }),
-          }).catch(() => {});
+          }).catch(err => console.warn("Password-reset email failed to send:", err.message));
         }
         return { ok: true };
       } catch (err) {
