@@ -329,7 +329,7 @@ function fromDbEndorsement(row) {
   return { employeeId: row.employee_id, managerId: row.manager_id, month: row.month_key };
 }
 function fromDbCoaching(row) {
-  return { id: row.id, employeeId: row.employee_id, managerId: row.manager_id, category: row.category, notes: row.notes, escalated: row.escalated, resolved: !!row.resolved, date: row.session_date };
+  return { id: row.id, employeeId: row.employee_id, managerId: row.manager_id, category: row.category, notes: row.notes, escalated: row.escalated, resolved: !!row.resolved, resolvedAt: row.resolved_at, date: row.session_date };
 }
 function fromDbTrainingRequest(row) {
   return { id: row.id, managerId: row.manager_id, title: row.title, reason: row.reason, suggestedDate: row.suggested_date, status: row.status, requestedAt: row.requested_at?.slice(0, 10) };
@@ -2131,12 +2131,12 @@ function ClassTrainingSection({ state, actions, scope, managerId, actorName }) {
               <div>
                 <div className="font-semibold tp-display text-lg">{activeClass.name}</div>
                 <div className="text-xs tp-slate-text mb-1">Class date: {activeClass.date}{activeClass.startTime ? ` · ${activeClass.startTime}${activeClass.endTime ? `–${activeClass.endTime}` : ""}` : ""}</div>
-                {scope === "admin" && !activeClass.startTime && (
+                {scope === "admin" && (
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-xs tp-slate-text">Add time:</span>
-                    <input type="time" className="tp-input text-xs w-auto" id={`start-${activeClass.id}`} />
+                    <span className="text-xs tp-slate-text">{activeClass.startTime ? "Edit time:" : "Add time:"}</span>
+                    <input key={`start-${activeClass.id}-${activeClass.startTime}`} type="time" className="tp-input text-xs w-auto" defaultValue={activeClass.startTime} id={`start-${activeClass.id}`} />
                     <span className="text-xs tp-slate-text">to</span>
-                    <input type="time" className="tp-input text-xs w-auto" id={`end-${activeClass.id}`} />
+                    <input key={`end-${activeClass.id}-${activeClass.endTime}`} type="time" className="tp-input text-xs w-auto" defaultValue={activeClass.endTime} id={`end-${activeClass.id}`} />
                     <button onClick={() => {
                       const st = document.getElementById(`start-${activeClass.id}`).value;
                       const et = document.getElementById(`end-${activeClass.id}`).value;
@@ -2353,7 +2353,7 @@ function CoachingSection({ state, managerId, team, actions, actorName }) {
                     )}
                     {s.escalated && s.resolved && (
                       <div className="flex items-center justify-between flex-wrap gap-2">
-                        <span className="text-xs tp-green-text font-semibold flex items-center gap-1"><CheckCircle2 size={13} /> Escalated previously — resolved by admin</span>
+                        <span className="text-xs tp-green-text font-semibold flex items-center gap-1"><CheckCircle2 size={13} /> Escalated previously — resolved{s.resolvedAt ? ` on ${s.resolvedAt.slice(0, 10)}` : ""}</span>
                         <button onClick={() => actions.escalateCoaching(s.id, actorName)}
                           className="text-xs rounded-lg px-3 py-1.5 tp-red-text border border-red-200 flex items-center gap-1">
                           <AlertTriangle size={13} /> Re-escalate — issue recurring
@@ -3453,18 +3453,19 @@ function AmplifyTrainingAppInner() {
       const session = coachingSessions.find(s => s.id === sessionId);
       const emp = employees.find(e => e.id === session.employeeId);
       const wasResolved = session.resolved;
-      setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, escalated: true, resolved: false } : s));
+      setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, escalated: true, resolved: false, resolvedAt: null } : s));
       notify(`${actorName} ${wasResolved ? "re-escalated" : "escalated"} ${emp?.name} for intervention — call quality concern.`, "admin");
       logActivity(`${wasResolved ? "Re-escalated" : "Escalated"} for intervention — call quality — by ${actorName}.`, "escalation", null, session.employeeId);
-      try { await sbUpdate("coaching_sessions", "id", sessionId, { escalated: true, resolved: false }); }
+      try { await sbUpdate("coaching_sessions", "id", sessionId, { escalated: true, resolved: false, resolved_at: null }); }
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save escalation to database: ${err.message}` })); }
     },
     resolveEscalation: async (sessionId) => {
       const session = coachingSessions.find(s => s.id === sessionId);
       const emp = employees.find(e => e.id === session?.employeeId);
+      const resolvedAt = new Date().toISOString();
       try {
-        await sbUpdate("coaching_sessions", "id", sessionId, { resolved: true });
-        setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, resolved: true } : s));
+        await sbUpdate("coaching_sessions", "id", sessionId, { resolved: true, resolved_at: resolvedAt });
+        setCoachingSessions(coachingSessions.map(s => s.id === sessionId ? { ...s, resolved: true, resolvedAt } : s));
         logActivity(`Escalation for ${emp?.name || "an employee"} marked resolved.`, "escalation_resolved", null, session?.employeeId);
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't mark escalation resolved: ${err.message}` }));
