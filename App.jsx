@@ -151,10 +151,11 @@ function loadSession() {
     const s = JSON.parse(raw);
     if (Date.now() - s.lastActivity > SESSION_TIMEOUT_MS) { localStorage.removeItem(SESSION_KEY); return null; }
     return s;
-  } catch { return null; }
+  } catch (err) { console.warn("Session couldn't be read from this browser's storage:", err.message); return null; }
 }
 function saveSession(session) {
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ ...session, lastActivity: Date.now() })); } catch {}
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ ...session, lastActivity: Date.now() })); }
+  catch (err) { console.warn("Session couldn't be saved — this browser may be blocking storage (e.g. private browsing):", err.message); }
 }
 function touchSession() {
   try {
@@ -163,10 +164,10 @@ function touchSession() {
     const s = JSON.parse(raw);
     s.lastActivity = Date.now();
     localStorage.setItem(SESSION_KEY, JSON.stringify(s));
-  } catch {}
+  } catch (err) { console.warn("Session activity couldn't be saved:", err.message); }
 }
 function clearSession() {
-  try { localStorage.removeItem(SESSION_KEY); } catch {}
+  try { localStorage.removeItem(SESSION_KEY); } catch (err) { console.warn("Session couldn't be cleared:", err.message); }
 }
 
 /* ---------------------------------- SUPABASE CONNECTION (plain fetch — no SDK needed) ---------------------------------- */
