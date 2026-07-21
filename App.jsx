@@ -2909,8 +2909,8 @@ function AmplifyTrainingAppInner() {
 
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {
-        // Non-fatal — push just won't be available; rest of the app is unaffected.
+      navigator.serviceWorker.register("/sw.js").catch(err => {
+        console.warn("Service worker registration failed — push notifications won't be available, rest of the app is unaffected:", err.message);
       });
     }
   }, []);
@@ -3070,7 +3070,8 @@ function AmplifyTrainingAppInner() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ to: person.email, subject: "New notification in Amplify", text }),
-        }).catch(err => console.warn("Email notification failed to send:", err.message));
+        }).then(async res => { if (!res.ok) console.warn("Email notification failed to send:", (await res.json().catch(() => ({}))).error || res.status); })
+          .catch(err => console.warn("Email notification failed to send:", err.message));
       }
       // Best-effort push notification — same reasoning as email above: kept
       // silent on failure since it's a bonus channel, not primary.
@@ -3078,6 +3079,8 @@ function AmplifyTrainingAppInner() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ employeeId: recipientId, title: "Amplify", body: text }),
+      }).then(res => res.json()).then(data => {
+        if (data?.errors?.length > 0) console.warn("Push notification partially failed:", data.errors);
       }).catch(err => console.warn("Push notification failed to send:", err.message));
     }
   };
@@ -3373,7 +3376,8 @@ function AmplifyTrainingAppInner() {
             text: `You've been enrolled in "${cls.name}" on ${cls.date}${cls.startTime ? ` at ${cls.startTime}` : ""}${cls.trainerName ? ` with ${cls.trainerName}` : ""}. A calendar invite is attached — open it to add this to your Outlook or calendar app.`,
             icsContent: ics, icsFilename: "training-invite.ics",
           }),
-        }).catch(err => console.warn("Calendar invite email failed to send:", err.message));
+        }).then(async res => { if (!res.ok) console.warn("Calendar invite email failed to send:", (await res.json().catch(() => ({}))).error || res.status); })
+          .catch(err => console.warn("Calendar invite email failed to send:", err.message));
       }
       return { ok: true };
     },
@@ -3548,7 +3552,8 @@ function AmplifyTrainingAppInner() {
           fetch("/api/send-email", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ to: emp.email, subject: "Your Amplify password was reset", text: `Your password was reset by the admin team. New password: ${newPassword}\n\nPlease change it after logging in.` }),
-          }).catch(err => console.warn("Password-reset email failed to send:", err.message));
+          }).then(async res => { if (!res.ok) console.warn("Password-reset email failed to send:", (await res.json().catch(() => ({}))).error || res.status); })
+            .catch(err => console.warn("Password-reset email failed to send:", err.message));
         }
         return { ok: true };
       } catch (err) {
@@ -3561,17 +3566,23 @@ function AmplifyTrainingAppInner() {
       if (!emp) return { ok: false, error: "No account found with that email." };
       const newPassword = generateTempPassword();
       try {
-        await sbUpdate("employees", "id", emp.id, { password: newPassword });
-        setEmployees(employees.map(e => e.id === emp.id ? { ...e, password: newPassword } : e));
-        logActivity(`Password reset requested (self-service).`, "password_reset", null, emp.id);
         const emailRes = await fetch("/api/send-email", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ to: emp.email, subject: "Your Amplify password was reset", text: `You requested a password reset. Your new password: ${newPassword}\n\nPlease change it after logging in.` }),
         });
-        if (!emailRes.ok) return { ok: false, error: "Couldn't send the reset email — contact your admin team for a manual reset." };
+        if (!emailRes.ok) {
+          const errBody = await emailRes.json().catch(() => ({}));
+          return { ok: false, error: `Couldn't send the reset email (${errBody.error || emailRes.status}) — your password was NOT changed. Contact your admin team for a manual reset instead.` };
+        }
+        // Only change the actual password once we've confirmed the email
+        // holding the new one really went out — otherwise a failed send
+        // would lock someone out of both their old and new password.
+        await sbUpdate("employees", "id", emp.id, { password: newPassword });
+        setEmployees(employees.map(e => e.id === emp.id ? { ...e, password: newPassword } : e));
+        logActivity(`Password reset requested (self-service).`, "password_reset", null, emp.id);
         return { ok: true };
       } catch (err) {
-        return { ok: false, error: `Couldn't send the reset email — contact your admin team for a manual reset. (${err.message})` };
+        return { ok: false, error: `Couldn't send the reset email — your password was NOT changed. Contact your admin team for a manual reset. (${err.message})` };
       }
     },
     deleteUser: async (employeeId) => {
