@@ -3738,13 +3738,16 @@ function AmplifyTrainingAppInner() {
       <div className="max-w-5xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
           <div>
-            <div className="tp-display font-extrabold text-2xl text-white flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center tp-shimmer tp-float" style={{ boxShadow: "0 8px 20px -6px rgba(201,162,75,0.6)" }}>
-                <GraduationCap size={19} color="#0B2545" />
+            <div className="tp-display font-extrabold text-white flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 p-1.5" style={{ background: "white", boxShadow: "0 8px 20px -6px rgba(0,0,0,0.35)" }}>
+                <img src="/amex-logo.png" alt="American Express" className="w-full h-full object-contain" />
               </div>
-              Amplify <span className="tp-gold-text">Training & Development</span>
+              <div>
+                <div className="text-2xl leading-tight">Amplify</div>
+                <div className="text-sm font-bold tp-gold-text leading-tight">Amex CX Training & Development</div>
+              </div>
             </div>
-            <div className="text-xs ml-[52px] flex items-center gap-1.5" style={{ color: "rgba(255,255,255,0.6)" }}>
+            <div className="text-xs ml-[56px] flex items-center gap-1.5" style={{ color: "rgba(255,255,255,0.6)" }}>
               {dataStatus.loading ? "Connecting to database…" :
                 dataStatus.connected ? <><span className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--green)" }} /> Connected to live database</> :
                 <span className="tp-red-text">Offline — using local data ({dataStatus.error})</span>}
