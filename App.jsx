@@ -428,6 +428,10 @@ function AdminView({ state, actions }) {
   const [qaResults, setQaResults] = useState([]);
   const [qaLoading, setQaLoading] = useState(false);
   const [qaError, setQaError] = useState("");
+  const [trainerFilter, setTrainerFilter] = useState("");
+  const [trainerFeedback, setTrainerFeedback] = useState([]);
+  const [trainerFbLoading, setTrainerFbLoading] = useState(false);
+  const [trainerFbError, setTrainerFbError] = useState("");
   const [addFileModuleId, setAddFileModuleId] = useState(null);
   const [adminAssignEmpIds, setAdminAssignEmpIds] = useState([]);
   const [adminAssignMod, setAdminAssignMod] = useState("");
@@ -459,6 +463,37 @@ function AdminView({ state, actions }) {
       setQaLoading(false);
     }
   };
+
+  const loadTrainerFeedback = async (trainerName) => {
+    if (!trainerName) { setTrainerFeedback([]); return; }
+    setTrainerFbLoading(true); setTrainerFbError(""); setTrainerFeedback([]);
+    try {
+      const classIds = state.classTrainings.filter(c => c.trainerName === trainerName).map(c => c.id);
+      if (classIds.length === 0) { setTrainerFeedback([]); return; }
+      const rows = await sbSelect("class_feedback", `class_id=in.(${classIds.join(",")})&select=*&order=created_at.desc`);
+      const enriched = rows.map(r => {
+        const cls = state.classTrainings.find(c => c.id === r.class_id);
+        const emp = state.employees.find(e => e.id === r.employee_id);
+        return { id: r.id, rating: r.rating, comment: r.comment, className: cls?.name || "Unknown class", date: cls?.date || "", employeeName: emp?.name || "Unknown" };
+      });
+      setTrainerFeedback(enriched);
+    } catch (err) {
+      setTrainerFbError(`Couldn't load trainer feedback: ${err.message}`);
+    } finally {
+      setTrainerFbLoading(false);
+    }
+  };
+
+  const exportTrainerFeedbackCSV = () => {
+    const rows = [["Trainer", "Class", "Date", "Employee", "Rating", "Comment"], ...trainerFeedback.map(f => [trainerFilter, f.className, f.date, f.employeeName, f.rating, f.comment || ""])];
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `trainer_feedback_${trainerFilter.replace(/\s+/g, "_")}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const [viewAsId, setViewAsId] = useState("");
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachError, setAttachError] = useState("");
@@ -1105,6 +1140,42 @@ function AdminView({ state, actions }) {
             )}
           </div>
 
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold mb-2 flex items-center gap-2"><Star size={16} className="tp-gold-text" /> Trainer feedback — pulled per trainer</div>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <select className="tp-input w-auto text-sm" value={trainerFilter} onChange={e => { setTrainerFilter(e.target.value); loadTrainerFeedback(e.target.value); }}>
+                <option value="">Select a trainer…</option>
+                {[...new Set(state.classTrainings.filter(c => c.trainerName).map(c => c.trainerName))].sort().map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              {trainerFbLoading && <span className="text-xs tp-slate-text">Loading…</span>}
+              {trainerFeedback.length > 0 && (
+                <button onClick={exportTrainerFeedbackCSV} className="tp-btn-gold rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1">
+                  <FileSpreadsheet size={14} /> Export CSV
+                </button>
+              )}
+            </div>
+            {trainerFbError && <div className="text-xs tp-red-text mb-2">{trainerFbError}</div>}
+            {trainerFeedback.length > 0 && (
+              <div>
+                <div className="text-xs tp-slate-text mb-2">Average rating: <span className="font-semibold tp-navy-text">{(trainerFeedback.reduce((s, f) => s + f.rating, 0) / trainerFeedback.length).toFixed(1)} / 5</span> across {trainerFeedback.length} response{trainerFeedback.length === 1 ? "" : "s"}</div>
+                <div className="grid gap-2">
+                  {trainerFeedback.map(f => (
+                    <div key={f.id} className="p-3 rounded-lg tp-ice-bg">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-0.5">{[1, 2, 3, 4, 5].map(n => <Star key={n} size={13} color={n <= f.rating ? "var(--gold)" : "#D9DFEA"} fill={n <= f.rating ? "var(--gold)" : "none"} />)}</div>
+                        <span className="text-xs tp-slate-text">{f.className} · {f.date}</span>
+                      </div>
+                      {f.comment && <div className="text-xs tp-slate-text">"{f.comment}"</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {trainerFilter && !trainerFbLoading && trainerFeedback.length === 0 && !trainerFbError && (
+              <div className="text-xs tp-slate-text">No feedback submitted for this trainer yet.</div>
+            )}
+          </div>
+
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <button onClick={exportCSV} className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-2">
               <FileSpreadsheet size={16} /> Export to Excel (CSV)
@@ -1610,11 +1681,36 @@ function CelebrationsBanner({ celebrations }) {
   );
 }
 
-function TraineeClassView({ state, employeeId }) {
+function TraineeClassView({ state, employeeId, actions }) {
   const [classTab, setClassTab] = useState(null);
   const myEnrollments = state.classTrainings.filter(c => c.enrollments.some(en => en.employeeId === employeeId));
   const activeClass = state.classTrainings.find(c => c.id === classTab);
   const myEnrollment = activeClass?.enrollments.find(en => en.employeeId === employeeId);
+  const isPast = activeClass && new Date(activeClass.date) <= new Date(new Date().toDateString());
+
+  const [existingFeedback, setExistingFeedback] = useState(undefined); // undefined = loading, null = none yet
+  const [fbRating, setFbRating] = useState(0);
+  const [fbComment, setFbComment] = useState("");
+  const [fbSubmitting, setFbSubmitting] = useState(false);
+  const [fbError, setFbError] = useState("");
+
+  useEffect(() => {
+    if (!activeClass || !myEnrollment) { setExistingFeedback(null); return; }
+    setExistingFeedback(undefined);
+    sbSelect("class_feedback", `class_id=eq.${activeClass.id}&employee_id=eq.${employeeId}&select=*`)
+      .then(rows => setExistingFeedback(rows[0] || null))
+      .catch(() => setExistingFeedback(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClass?.id, employeeId]);
+
+  const submitFeedback = async () => {
+    if (!fbRating) { setFbError("Please select a rating."); return; }
+    setFbSubmitting(true); setFbError("");
+    const result = await actions.submitClassFeedback(activeClass.id, employeeId, fbRating, fbComment.trim());
+    if (result.ok) setExistingFeedback(result.feedback);
+    else setFbError(result.error);
+    setFbSubmitting(false);
+  };
 
   return (
     <div>
@@ -1644,10 +1740,41 @@ function TraineeClassView({ state, employeeId }) {
           </div>
           {myEnrollment ? (
             activeClass.quizEnabled && (
-              <div className="text-sm">Your quiz score: <span className="font-semibold">{myEnrollment.quizScore != null ? `${myEnrollment.quizScore}%` : "Not scored yet"}</span></div>
+              <div className="text-sm mb-3">Your quiz score: <span className="font-semibold">{myEnrollment.quizScore != null ? `${myEnrollment.quizScore}%` : "Not scored yet"}</span></div>
             )
           ) : (
             <div className="text-xs tp-slate-text">You're not enrolled in this class — ask your manager to enroll you if you need to attend.</div>
+          )}
+
+          {myEnrollment && isPast && existingFeedback === undefined && (
+            <div className="text-xs tp-slate-text">Loading feedback…</div>
+          )}
+          {myEnrollment && isPast && existingFeedback === null && (
+            <div className="border-t pt-3 mt-1" style={{ borderColor: "var(--line)" }}>
+              <div className="text-sm font-semibold mb-2">How was this training?</div>
+              <div className="flex items-center gap-1 mb-2">
+                {[1, 2, 3, 4, 5].map(n => (
+                  <button key={n} onClick={() => setFbRating(n)} className="p-0.5">
+                    <Star size={22} color={n <= fbRating ? "var(--gold)" : "#D9DFEA"} fill={n <= fbRating ? "var(--gold)" : "none"} />
+                  </button>
+                ))}
+              </div>
+              <textarea className="tp-input mb-2" rows={2} placeholder="Any comments about the trainer or session? (optional)"
+                value={fbComment} onChange={e => setFbComment(e.target.value)} />
+              {fbError && <div className="text-xs tp-red-text mb-2">{fbError}</div>}
+              <button onClick={submitFeedback} disabled={fbSubmitting} className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-40">
+                {fbSubmitting ? "Submitting…" : "Submit feedback"}
+              </button>
+            </div>
+          )}
+          {myEnrollment && isPast && existingFeedback && (
+            <div className="border-t pt-3 mt-1" style={{ borderColor: "var(--line)" }}>
+              <div className="text-xs tp-green-text font-semibold flex items-center gap-1 mb-1"><CheckCircle2 size={13} /> Thanks — feedback submitted</div>
+              <div className="flex items-center gap-0.5 mb-1">
+                {[1, 2, 3, 4, 5].map(n => <Star key={n} size={14} color={n <= existingFeedback.rating ? "var(--gold)" : "#D9DFEA"} fill={n <= existingFeedback.rating ? "var(--gold)" : "none"} />)}
+              </div>
+              {existingFeedback.comment && <div className="text-xs tp-slate-text">"{existingFeedback.comment}"</div>}
+            </div>
           )}
         </div>
       )}
@@ -1851,7 +1978,7 @@ function TraineeView({ state, employeeId, actions }) {
 
       {tab === "library" && <TrainingLibrary modules={state.modules} />}
 
-      {tab === "classes" && <TraineeClassView state={state} employeeId={employeeId} />}
+      {tab === "classes" && <TraineeClassView state={state} employeeId={employeeId} actions={actions} />}
 
       {tab === "achievements" && (
         <div>
@@ -3338,6 +3465,16 @@ function AmplifyTrainingAppInner() {
       setClassTrainings(classTrainings.map(c => c.id === classId ? { ...c, startTime, endTime } : c));
       try { await sbUpdate("class_trainings", "id", classId, { start_time: startTime || null, end_time: endTime || null }); }
       catch (err) { setDataStatus(s => ({ ...s, error: `Couldn't save class time to database: ${err.message}` })); }
+    },
+    submitClassFeedback: async (classId, employeeId, rating, comment) => {
+      try {
+        const [inserted] = await sbInsert("class_feedback", [{ class_id: classId, employee_id: employeeId, rating, comment: comment || null }]);
+        const cls = classTrainings.find(c => c.id === classId);
+        logActivity(`Feedback submitted for "${cls?.name || "a class"}" — ${rating}/5.`, "class_feedback", null, employeeId);
+        return { ok: true, feedback: { id: inserted.id, rating: inserted.rating, comment: inserted.comment } };
+      } catch (err) {
+        return { ok: false, error: `Couldn't save feedback: ${err.message}` };
+      }
     },
     enrollInClass: async (classId, employeeId, actorName, scope) => {
       const cls = classTrainings.find(c => c.id === classId);
