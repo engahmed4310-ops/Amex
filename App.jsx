@@ -304,7 +304,7 @@ function fromDbQuizQuestion(row) {
 }
 // --- Assignments ---
 function fromDbAssignment(row) {
-  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status, passThreshold: row.pass_threshold ?? 80, attempts: row.attempts || 0, activeSeconds: row.active_seconds || 0, assignedAt: row.assigned_at, completedAt: row.completed_at, dueDate: row.due_date };
+  return { id: row.id, employeeId: row.employee_id, moduleId: row.module_id, progress: row.progress, timeSpentMin: row.time_spent_minutes, quizScore: row.quiz_score, status: row.status, passThreshold: row.pass_threshold ?? 80, attempts: row.attempts || 0, activeSeconds: row.active_seconds || 0, assignedAt: row.assigned_at, completedAt: row.completed_at, dueDate: row.due_date, assignedBy: row.assigned_by };
 }
 // --- Class trainings (nested: sessions, enrollments, comments) ---
 function assembleClassTrainings(classRows, sessionRows, enrollRows, commentRows) {
@@ -432,6 +432,11 @@ function AdminView({ state, actions }) {
   const [trainerFeedback, setTrainerFeedback] = useState([]);
   const [trainerFbLoading, setTrainerFbLoading] = useState(false);
   const [trainerFbError, setTrainerFbError] = useState("");
+  const reportColumnLabels = { date: "Date Assigned", agent: "Agent Name", dept: "Department", manager: "Direct Manager", assignedBy: "Assigned By", training: "Training Name", score: "Quiz Score", status: "Status", dueDate: "Due Date" };
+  const [reportColumns, setReportColumns] = useState({ date: true, agent: true, dept: false, manager: true, assignedBy: false, training: true, score: true, status: false, dueDate: false });
+  const [reportCriteria, setReportCriteria] = useState({ dateFrom: "", dateTo: "", agentSearch: "", moduleId: "", managerId: "", dept: "", minScore: "", maxScore: "" });
+  const [reportPreview, setReportPreview] = useState([]);
+  const [reportRan, setReportRan] = useState(false);
   const [addFileModuleId, setAddFileModuleId] = useState(null);
   const [adminAssignEmpIds, setAdminAssignEmpIds] = useState([]);
   const [adminAssignMod, setAdminAssignMod] = useState("");
@@ -491,6 +496,54 @@ function AdminView({ state, actions }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = `trainer_feedback_${trainerFilter.replace(/\s+/g, "_")}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const runCustomReport = () => {
+    setReportRan(true);
+    const filtered = state.assignments.filter(a => {
+      const emp = state.employees.find(e => e.id === a.employeeId);
+      const mod = state.modules.find(m => m.id === a.moduleId);
+      if (!emp || !mod) return false;
+      const assignedDate = a.assignedAt ? a.assignedAt.slice(0, 10) : "";
+      if (reportCriteria.dateFrom && (!assignedDate || assignedDate < reportCriteria.dateFrom)) return false;
+      if (reportCriteria.dateTo && (!assignedDate || assignedDate > reportCriteria.dateTo)) return false;
+      if (reportCriteria.agentSearch && !emp.name.toLowerCase().includes(reportCriteria.agentSearch.trim().toLowerCase())) return false;
+      if (reportCriteria.moduleId && a.moduleId !== reportCriteria.moduleId) return false;
+      if (reportCriteria.managerId) {
+        if (reportCriteria.managerId === "__admin__") { if (a.assignedBy) return false; }
+        else if (a.assignedBy !== reportCriteria.managerId) return false;
+      }
+      if (reportCriteria.dept && emp.dept !== reportCriteria.dept) return false;
+      if (reportCriteria.minScore !== "" && (a.quizScore == null || a.quizScore < Number(reportCriteria.minScore))) return false;
+      if (reportCriteria.maxScore !== "" && (a.quizScore == null || a.quizScore > Number(reportCriteria.maxScore))) return false;
+      return true;
+    }).map(a => {
+      const emp = state.employees.find(e => e.id === a.employeeId);
+      const mod = state.modules.find(m => m.id === a.moduleId);
+      return {
+        date: a.assignedAt ? a.assignedAt.slice(0, 10) : "—",
+        agent: emp?.name || "—",
+        dept: emp?.dept || "—",
+        manager: managerName(managers, emp?.managerId),
+        assignedBy: a.assignedBy ? (managers.find(m => m.id === a.assignedBy)?.name || "Unknown") : "Admin (direct)",
+        training: mod?.title || "—",
+        score: a.quizScore != null ? `${a.quizScore}%` : "—",
+        status: a.status,
+        dueDate: a.dueDate || "—",
+      };
+    });
+    setReportPreview(filtered);
+  };
+
+  const exportCustomReportCSV = () => {
+    const activeCols = Object.entries(reportColumns).filter(([, v]) => v).map(([k]) => k);
+    const rows = [activeCols.map(k => reportColumnLabels[k]), ...reportPreview.map(r => activeCols.map(k => r[k]))];
+    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "custom_training_report.csv"; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -1176,6 +1229,127 @@ function AdminView({ state, actions }) {
             )}
           </div>
 
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold mb-2 flex items-center gap-2"><FileSpreadsheet size={16} className="tp-blue-text" /> Custom report builder</div>
+            <p className="text-xs tp-slate-text mb-3">Filter by whatever you need — a date range for "training given this month," a specific manager for "training assigned by manager," or any combination — then export exactly the columns you want.</p>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+              <div>
+                <label className="text-xs tp-slate-text">From date</label>
+                <input type="date" className="tp-input text-sm" value={reportCriteria.dateFrom} onChange={e => setReportCriteria({ ...reportCriteria, dateFrom: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-xs tp-slate-text">To date</label>
+                <input type="date" className="tp-input text-sm" value={reportCriteria.dateTo} onChange={e => setReportCriteria({ ...reportCriteria, dateTo: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-xs tp-slate-text">Agent name contains</label>
+                <input className="tp-input text-sm" placeholder="Any" value={reportCriteria.agentSearch} onChange={e => setReportCriteria({ ...reportCriteria, agentSearch: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-xs tp-slate-text">Training module</label>
+                <select className="tp-input text-sm" value={reportCriteria.moduleId} onChange={e => setReportCriteria({ ...reportCriteria, moduleId: e.target.value })}>
+                  <option value="">Any</option>
+                  {state.modules.map(m => <option key={m.id} value={m.id}>{m.title}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs tp-slate-text">Assigned by (manager)</label>
+                <select className="tp-input text-sm" value={reportCriteria.managerId} onChange={e => setReportCriteria({ ...reportCriteria, managerId: e.target.value })}>
+                  <option value="">Any</option>
+                  <option value="__admin__">Admin (direct)</option>
+                  {managers.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs tp-slate-text">Department</label>
+                <select className="tp-input text-sm" value={reportCriteria.dept} onChange={e => setReportCriteria({ ...reportCriteria, dept: e.target.value })}>
+                  <option value="">Any</option>
+                  {LIVE_DEPARTMENTS.map(d => <option key={d.name} value={d.name}>{d.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs tp-slate-text">Min quiz score</label>
+                <input type="number" min={0} max={100} className="tp-input text-sm" placeholder="0" value={reportCriteria.minScore} onChange={e => setReportCriteria({ ...reportCriteria, minScore: e.target.value })} />
+              </div>
+              <div>
+                <label className="text-xs tp-slate-text">Max quiz score</label>
+                <input type="number" min={0} max={100} className="tp-input text-sm" placeholder="100" value={reportCriteria.maxScore} onChange={e => setReportCriteria({ ...reportCriteria, maxScore: e.target.value })} />
+              </div>
+            </div>
+
+            <div className="text-xs tp-slate-text mb-1">Columns to include</div>
+            <div className="flex flex-wrap gap-3 mb-3">
+              {Object.entries(reportColumns).map(([key, checked]) => (
+                <label key={key} className="flex items-center gap-1 text-xs">
+                  <input type="checkbox" checked={checked} onChange={e => setReportColumns({ ...reportColumns, [key]: e.target.checked })} />
+                  {reportColumnLabels[key]}
+                </label>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2 mb-3">
+              <button onClick={runCustomReport} className="tp-btn-primary rounded-lg px-4 py-2 text-sm font-medium flex items-center gap-2">
+                <Target size={15} /> Preview report
+              </button>
+              {reportPreview.length > 0 && (
+                <button onClick={exportCustomReportCSV} className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-2">
+                  <FileSpreadsheet size={15} /> Export CSV ({reportPreview.length} rows)
+                </button>
+              )}
+            </div>
+
+            {reportPreview.length > 0 && (
+              <div className="overflow-x-auto tp-scrollbar" style={{ maxHeight: 320 }}>
+                <table className="w-full text-xs">
+                  <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
+                    {Object.entries(reportColumns).filter(([, v]) => v).map(([key]) => <th key={key} className="p-2">{reportColumnLabels[key]}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {reportPreview.slice(0, 50).map((row, i) => (
+                      <tr key={i} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
+                        {Object.entries(reportColumns).filter(([, v]) => v).map(([key]) => <td key={key} className="p-2">{row[key]}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {reportPreview.length > 50 && <div className="text-xs tp-slate-text mt-1">Showing first 50 of {reportPreview.length} — export CSV for the full set.</div>}
+              </div>
+            )}
+            {reportRan && reportPreview.length === 0 && (
+              <div className="text-xs tp-slate-text">No assignments match these criteria.</div>
+            )}
+          </div>
+
+          <div className="tp-card p-4 mb-4">
+            <div className="font-semibold mb-2 flex items-center gap-2"><Send size={16} className="tp-gold-text" /> Training assigned by manager — summary</div>
+            <table className="w-full text-sm">
+              <thead><tr className="text-left tp-slate-text border-b" style={{ borderColor: "var(--line)" }}>
+                <th className="p-2">Assigned by</th><th className="p-2">Trainings assigned</th>
+              </tr></thead>
+              <tbody>
+                {(() => {
+                  const counts = {};
+                  state.assignments.forEach(a => {
+                    const key = a.assignedBy || "__admin__";
+                    counts[key] = (counts[key] || 0) + 1;
+                  });
+                  const rows = Object.entries(counts).map(([key, count]) => ({
+                    name: key === "__admin__" ? "Admin (direct)" : (managers.find(m => m.id === key)?.name || "Unknown"),
+                    count,
+                  })).sort((a, b) => b.count - a.count);
+                  return rows.length === 0 ? (
+                    <tr><td colSpan={2} className="p-2 text-xs tp-slate-text">No assignments yet.</td></tr>
+                  ) : rows.map((r, i) => (
+                    <tr key={i} className="border-b last:border-0" style={{ borderColor: "var(--line)" }}>
+                      <td className="p-2 font-medium">{r.name}</td><td className="p-2">{r.count}</td>
+                    </tr>
+                  ));
+                })()}
+              </tbody>
+            </table>
+          </div>
+
           <div className="flex flex-wrap items-center gap-3 mb-4">
             <button onClick={exportCSV} className="tp-btn-gold rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-2">
               <FileSpreadsheet size={16} /> Export to Excel (CSV)
@@ -1582,7 +1756,7 @@ function ManagerView({ state, managerId, actions }) {
               <p className="text-xs tp-slate-text -mt-1">They get 3 attempts. Falling short restarts the module; a 3rd miss auto-escalates to the admin team.</p>
               <button onClick={async () => {
                 setAssignFeedback(null); setAssigning(true);
-                const results = await Promise.all(assignEmpIds.map(id => actions.assign(id, assignMod, myName, assignPassThreshold, assignDueDate || null)));
+                const results = await Promise.all(assignEmpIds.map(id => actions.assign(id, assignMod, myName, assignPassThreshold, assignDueDate || null, managerId)));
                 const okCount = results.filter(r => r.ok).length;
                 const failMsgs = results.filter(r => !r.ok).map(r => r.error);
                 setAssignFeedback({ ok: okCount > 0, okCount, total: results.length, failMsgs, moduleTitle: state.modules.find(m => m.id === assignMod)?.title });
@@ -3287,18 +3461,18 @@ function AmplifyTrainingAppInner() {
         setDataStatus(s => ({ ...s, error: `Couldn't remove request from database: ${err.message}` }));
       }
     },
-    assign: async (employeeId, moduleId, actorName, passThreshold = 80, dueDate = null) => {
+    assign: async (employeeId, moduleId, actorName, passThreshold = 80, dueDate = null, assignedByEmployeeId = null) => {
       const emp = employees.find(e => e.id === employeeId);
       const mod = modules.find(m => m.id === moduleId);
       if (assignments.some(a => a.employeeId === employeeId && a.moduleId === moduleId)) {
         return { ok: false, error: `${emp?.name || "This employee"} is already assigned "${mod?.title}".` };
       }
       try {
-        const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started", pass_threshold: passThreshold, attempts: 0, active_seconds: 0, due_date: dueDate }]);
+        const [inserted] = await sbInsert("assignments", [{ employee_id: employeeId, module_id: moduleId, progress: 0, time_spent_minutes: 0, quiz_score: null, status: "not_started", pass_threshold: passThreshold, attempts: 0, active_seconds: 0, due_date: dueDate, assigned_by: assignedByEmployeeId }]);
         setAssignments(prev => [...prev, fromDbAssignment(inserted)]);
       } catch (err) {
         setDataStatus(s => ({ ...s, error: `Couldn't save assignment to database: ${err.message}` }));
-        setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started", passThreshold, attempts: 0, activeSeconds: 0, assignedAt: new Date().toISOString(), dueDate }]);
+        setAssignments(prev => [...prev, { id: Date.now(), employeeId, moduleId, progress: 0, timeSpentMin: 0, quizScore: null, status: "not_started", passThreshold, attempts: 0, activeSeconds: 0, assignedAt: new Date().toISOString(), dueDate, assignedBy: assignedByEmployeeId }]);
       }
       const dueText = dueDate ? ` Due by ${dueDate}.` : "";
       notify(`You were assigned "${mod?.title}"${actorName ? ` by ${actorName}` : ""}. You need ${passThreshold}%+ on the quiz to complete it.${dueText}`, "trainee", employeeId);
