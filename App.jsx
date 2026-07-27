@@ -18,7 +18,7 @@ const Theme = () => (
       background-image:
         radial-gradient(1100px 600px at 8% -10%, rgba(0,113,206,0.35), transparent 60%),
         radial-gradient(900px 500px at 105% 0%, rgba(201,162,75,0.22), transparent 55%),
-        linear-gradient(90deg, #0B2545 0%, #0B2545 20%, rgba(11,37,69,0.42) 42%, rgba(11,37,69,0.42) 58%, #0B2545 80%, #0B2545 100%),
+        linear-gradient(160deg, rgba(7,26,51,0.72) 0%, rgba(11,37,69,0.68) 50%, rgba(14,46,92,0.72) 100%),
         url('/amex-office-bg.jpg');
       background-size: auto, auto, cover, cover;
       background-position: center, center, center, center;
@@ -4073,6 +4073,10 @@ function AmplifyTrainingAppInner() {
             <button onClick={() => setShowInstallGuide(true)} className="p-2 rounded-lg hover:bg-gray-50" title="Add to phone home screen">
               <Smartphone size={15} className="tp-navy-text" />
             </button>
+            <a href={role === "admin" ? "/admin-guide.pdf" : "/manager-trainee-guide.pdf"} target="_blank" rel="noreferrer"
+              className="p-2 rounded-lg hover:bg-gray-50 flex items-center" title="Open the user guide">
+              <FileText size={15} className="tp-navy-text" />
+            </a>
             {Object.entries(roleMeta).map(([key, meta]) => (
               <button key={key} onClick={() => { setRole(key); setShowSignUp(false); setLoggedInEmployeeId(null); setLoggedInManagerId(null); setAdminAuthenticated(false); clearSession(); }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium ${role === key ? "tp-tab-active" : "tp-tab hover:bg-gray-50"}`}>
