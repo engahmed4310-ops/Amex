@@ -1863,7 +1863,7 @@ function CelebrationsBanner({ celebrations }) {
 function TraineeClassView({ state, employeeId, actions }) {
   const [classTab, setClassTab] = useState(null);
   const myEnrollments = state.classTrainings.filter(c => c.enrollments.some(en => en.employeeId === employeeId));
-  const activeClass = state.classTrainings.find(c => c.id === classTab);
+  const activeClass = myEnrollments.find(c => c.id === classTab);
   const myEnrollment = activeClass?.enrollments.find(en => en.employeeId === employeeId);
   const isPast = activeClass && new Date(activeClass.date) <= new Date(new Date().toDateString());
 
@@ -1893,7 +1893,7 @@ function TraineeClassView({ state, employeeId, actions }) {
 
   return (
     <div>
-      <TrainingCalendar classTrainings={state.classTrainings} onSelectClass={setClassTab} canAdd={false} onAddDay={() => {}} />
+      <TrainingCalendar classTrainings={myEnrollments} onSelectClass={setClassTab} canAdd={false} onAddDay={() => {}} />
 
       <div className="font-semibold text-sm mb-2 mt-2">My in-class trainings</div>
       {myEnrollments.length === 0 && <div className="text-sm tp-slate-text">You're not enrolled in any in-class training yet.</div>}
