@@ -14,10 +14,15 @@ const Theme = () => (
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap');
     .tp-root { font-family: 'Inter', sans-serif; color: var(--navy);
-      background:
+      background-color: #0B2545;
+      background-image:
         radial-gradient(1100px 600px at 8% -10%, rgba(0,113,206,0.35), transparent 60%),
         radial-gradient(900px 500px at 105% 0%, rgba(201,162,75,0.22), transparent 55%),
-        linear-gradient(160deg, #071A33 0%, #0B2545 42%, #0E2E5C 100%);
+        linear-gradient(90deg, #0B2545 0%, #0B2545 20%, rgba(11,37,69,0.42) 42%, rgba(11,37,69,0.42) 58%, #0B2545 80%, #0B2545 100%),
+        url('/amex-office-bg.jpg');
+      background-size: auto, auto, cover, cover;
+      background-position: center, center, center, center;
+      background-repeat: no-repeat, no-repeat, no-repeat, no-repeat;
       min-height: 100vh;
       min-height: 100dvh;
     }
