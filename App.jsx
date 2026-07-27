@@ -18,7 +18,7 @@ const Theme = () => (
       background-image:
         radial-gradient(1100px 600px at 8% -10%, rgba(0,113,206,0.35), transparent 60%),
         radial-gradient(900px 500px at 105% 0%, rgba(201,162,75,0.22), transparent 55%),
-        linear-gradient(160deg, rgba(7,26,51,0.72) 0%, rgba(11,37,69,0.68) 50%, rgba(14,46,92,0.72) 100%),
+        linear-gradient(160deg, rgba(7,26,51,0.55) 0%, rgba(11,37,69,0.5) 50%, rgba(14,46,92,0.55) 100%),
         url('/amex-office-bg.jpg');
       background-size: auto, auto, cover, cover;
       background-position: center, center, center, center;
@@ -4055,7 +4055,7 @@ function AmplifyTrainingAppInner() {
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
           <div>
             <div className="tp-display font-extrabold text-white flex items-center gap-3">
-              <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 p-1.5" style={{ background: "white", boxShadow: "0 8px 20px -6px rgba(0,0,0,0.35)" }}>
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 p-1.5" style={{ background: "white", boxShadow: "0 8px 24px -4px rgba(0,0,0,0.55)" }}>
                 <img src="/amex-logo.png" alt="American Express" className="w-full h-full object-contain" />
               </div>
               <div>
